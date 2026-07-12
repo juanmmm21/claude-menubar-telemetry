@@ -60,6 +60,7 @@ class TelemetryManager: ObservableObject {
         let telemetry: SessionTelemetry
     }
     private var sessionCache: [String: FileCacheInfo] = [:]
+    private let cacheLock = NSLock() // Thread-safe lock for sessionCache
     
     init() {
         refresh()
@@ -115,6 +116,15 @@ class TelemetryManager: ObservableObject {
             return
         }
         
+        // Ensure parsing calls originate sequentially on the main thread
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.refresh()
+            }
+            return
+        }
+        
+        guard !isScanning else { return }
         isScanning = true
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -225,7 +235,11 @@ class TelemetryManager: ObservableObject {
         }
         
         // Fast path: Check Cache
-        if let cached = sessionCache[path],
+        cacheLock.lock()
+        let cached = sessionCache[path]
+        cacheLock.unlock()
+        
+        if let cached = cached,
            cached.size == fileSize,
            cached.modificationDate == modificationDate {
             return cached.telemetry
@@ -302,7 +316,9 @@ class TelemetryManager: ObservableObject {
         )
         
         // Cache the parsed result
+        cacheLock.lock()
         sessionCache[path] = FileCacheInfo(modificationDate: modificationDate, size: fileSize, telemetry: telemetry)
+        cacheLock.unlock()
         
         return telemetry
     }
