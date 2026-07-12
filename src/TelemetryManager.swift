@@ -1,48 +1,55 @@
 import Foundation
 import Combine
 
-struct ModelRates {
-    let name: String
-    let inputRate: Double        // USD per Million tokens
-    let outputRate: Double       // USD per Million tokens
-    let cacheWriteRate: Double   // USD per Million tokens
-    let cacheReadRate: Double    // USD per Million tokens
+struct ClaudeRequestEvent: Equatable {
+    let timestamp: Date
+    let model: String
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheReadTokens: Int
+    let cacheWriteTokens: Int
+    let projectName: String
 }
 
-struct SessionTelemetry: Identifiable, Equatable {
-    let id: String               // Session ID (filename without extension)
-    let projectName: String      // Cleaned project name
-    let timestamp: Date          // Date of the session
+struct ModelUsage: Identifiable, Equatable {
+    var id: String { modelName }
+    let modelName: String
+    var requestsCount: Int
     var inputTokens: Int
     var outputTokens: Int
     var cacheReadTokens: Int
     var cacheWriteTokens: Int
-    var cost: Double
-    var requestsCount: Int
-    var model: String
 }
 
-struct ProjectTelemetry: Identifiable, Equatable {
-    var id: String { name }      // Name is unique identifier here
-    let name: String
-    var inputTokens: Int
-    var outputTokens: Int
-    var cacheReadTokens: Int
-    var cacheWriteTokens: Int
-    var cost: Double
-    var requestsCount: Int
+struct QuotaReset: Identifiable, Equatable {
+    var id: String { "\(timestamp.timeIntervalSince1970)-\(projectName)-\(requestsCount)" }
+    let timestamp: Date          // The exact date when the quota returns (request date + 5 hours)
+    let projectName: String
+    let requestsCount: Int
+    let tokensReturned: Int
 }
 
 class TelemetryManager: ObservableObject {
-    @Published var totalCost: Double = 0.0
-    @Published var totalRequests: Int = 0
-    @Published var totalInputTokens: Int = 0
-    @Published var totalOutputTokens: Int = 0
-    @Published var totalCacheReadTokens: Int = 0
-    @Published var totalCacheWriteTokens: Int = 0
+    // 5-Hour Rolling Window Metrics
+    @Published var fiveHourRequests: Int = 0
+    @Published var fiveHourInputTokens: Int = 0
+    @Published var fiveHourOutputTokens: Int = 0
     
-    @Published var recentSessions: [SessionTelemetry] = []
-    @Published var projectBreakdown: [ProjectTelemetry] = []
+    // Weekly (7-Day) Metrics
+    @Published var weeklyRequests: Int = 0
+    @Published var weeklyInputTokens: Int = 0
+    @Published var weeklyOutputTokens: Int = 0
+    
+    // Claude Fable 5 Specific Metrics
+    @Published var fableRequests: Int = 0
+    @Published var fableInputTokens: Int = 0
+    @Published var fableOutputTokens: Int = 0
+    @Published var fableCacheReadTokens: Int = 0
+    @Published var fableCacheWriteTokens: Int = 0
+    
+    // Quota Resets & Model Usage Breakdown
+    @Published var upcomingResets: [QuotaReset] = []
+    @Published var modelUsageBreakdown: [ModelUsage] = []
     
     @Published var isDemoMode: Bool = false {
         didSet {
@@ -57,56 +64,33 @@ class TelemetryManager: ObservableObject {
     private struct FileCacheInfo {
         let modificationDate: Date
         let size: Int
-        let telemetry: SessionTelemetry
+        let requests: [ClaudeRequestEvent]
     }
     private var sessionCache: [String: FileCacheInfo] = [:]
-    private let cacheLock = NSLock() // Thread-safe lock for sessionCache
+    private let cacheLock = NSLock()
     
     init() {
         refresh()
     }
     
-    // Retrieves pricing rates for the given model
-    func getRates(for model: String) -> ModelRates {
+    // Normalize model name for display
+    func cleanModelName(_ model: String) -> String {
         let m = model.lowercased()
         if m.contains("fable") {
-            // Claude Fable 5 (Reasoning and Autonomous work)
-            return ModelRates(name: "Claude Fable 5", inputRate: 10.00, outputRate: 50.00, cacheWriteRate: 12.50, cacheReadRate: 1.00)
+            return "Claude Fable 5"
         } else if m.contains("sonnet-20241022") || m.contains("sonnet-latest") || (m.contains("sonnet") && m.contains("3-5")) {
-            // Claude 3.5 Sonnet
-            return ModelRates(name: "Claude 3.5 Sonnet", inputRate: 3.00, outputRate: 15.00, cacheWriteRate: 3.75, cacheReadRate: 0.30)
+            return "Claude 3.5 Sonnet"
         } else if m.contains("haiku-20241022") || (m.contains("haiku") && m.contains("3-5")) {
-            // Claude 3.5 Haiku
-            return ModelRates(name: "Claude 3.5 Haiku", inputRate: 0.80, outputRate: 4.00, cacheWriteRate: 1.00, cacheReadRate: 0.08)
+            return "Claude 3.5 Haiku"
         } else if m.contains("opus") {
-            // Claude 3 Opus
-            return ModelRates(name: "Claude 3 Opus", inputRate: 15.00, outputRate: 75.00, cacheWriteRate: 18.75, cacheReadRate: 1.50)
+            return "Claude 3 Opus"
         } else if m.contains("haiku") {
-            // Claude 3 Haiku
-            return ModelRates(name: "Claude 3 Haiku", inputRate: 0.25, outputRate: 1.25, cacheWriteRate: 0.3125, cacheReadRate: 0.03)
+            return "Claude 3 Haiku"
         } else if m.contains("sonnet") {
-            // Claude 3 Sonnet
-            return ModelRates(name: "Claude 3 Sonnet", inputRate: 3.00, outputRate: 15.00, cacheWriteRate: 3.75, cacheReadRate: 0.30)
+            return "Claude 3 Sonnet"
         } else {
-            // Default pricing (based on Sonnet 3.5)
-            return ModelRates(name: model, inputRate: 3.00, outputRate: 15.00, cacheWriteRate: 3.75, cacheReadRate: 0.30)
+            return model // Return raw model identifier
         }
-    }
-    
-    // Calculates total cost in USD for a usage object
-    func calculateCost(for usage: ClaudeUsage, model: String) -> Double {
-        let rates = getRates(for: model)
-        let input = Double(usage.inputTokens ?? 0)
-        let output = Double(usage.outputTokens ?? 0)
-        let cacheWrite = Double(usage.cacheCreationInputTokens ?? 0)
-        let cacheRead = Double(usage.cacheReadInputTokens ?? 0)
-        
-        let inputCost = (input / 1_000_000.0) * rates.inputRate
-        let outputCost = (output / 1_000_000.0) * rates.outputRate
-        let cacheWriteCost = (cacheWrite / 1_000_000.0) * rates.cacheWriteRate
-        let cacheReadCost = (cacheRead / 1_000_000.0) * rates.cacheReadRate
-        
-        return inputCost + outputCost + cacheWriteCost + cacheReadCost
     }
     
     // Trigger telemetry refresh
@@ -133,9 +117,7 @@ class TelemetryManager: ObservableObject {
             let homeDir = FileManager.default.homeDirectoryForCurrentUser
             let claudePath = homeDir.appendingPathComponent(".claude/projects").path
             
-            var sessions: [SessionTelemetry] = []
-            var projectsDict: [String: ProjectTelemetry] = [:]
-            
+            var allRequests: [ClaudeRequestEvent] = []
             let fileManager = FileManager.default
             
             if fileManager.fileExists(atPath: claudePath) {
@@ -151,32 +133,8 @@ class TelemetryManager: ObservableObject {
                                 for sessionFile in sessionFiles {
                                     if sessionFile.hasSuffix(".jsonl") {
                                         let filePath = (projectPath as NSString).appendingPathComponent(sessionFile)
-                                        if let telemetry = self.parseSessionFile(at: filePath, projectName: projectName) {
-                                            // Only register sessions with actual API requests to keep UI clean
-                                            if telemetry.requestsCount > 0 {
-                                                sessions.append(telemetry)
-                                                
-                                                // Aggregate project stats
-                                                if var proj = projectsDict[projectName] {
-                                                    proj.inputTokens += telemetry.inputTokens
-                                                    proj.outputTokens += telemetry.outputTokens
-                                                    proj.cacheReadTokens += telemetry.cacheReadTokens
-                                                    proj.cacheWriteTokens += telemetry.cacheWriteTokens
-                                                    proj.cost += telemetry.cost
-                                                    proj.requestsCount += telemetry.requestsCount
-                                                    projectsDict[projectName] = proj
-                                                } else {
-                                                    projectsDict[projectName] = ProjectTelemetry(
-                                                        name: projectName,
-                                                        inputTokens: telemetry.inputTokens,
-                                                        outputTokens: telemetry.outputTokens,
-                                                        cacheReadTokens: telemetry.cacheReadTokens,
-                                                        cacheWriteTokens: telemetry.cacheWriteTokens,
-                                                        cost: telemetry.cost,
-                                                        requestsCount: telemetry.requestsCount
-                                                    )
-                                                }
-                                            }
+                                        if let fileRequests = self.parseSessionFile(at: filePath, projectName: projectName) {
+                                            allRequests.append(contentsOf: fileRequests)
                                         }
                                     }
                                 }
@@ -186,48 +144,125 @@ class TelemetryManager: ObservableObject {
                 }
             }
             
-            // Sort sessions by timestamp descending (most recent first)
-            sessions.sort(by: { $0.timestamp > $1.timestamp })
-            
-            // Sort projects by cost descending
-            let sortedProjects = projectsDict.values.sorted(by: { $0.cost > $1.cost })
-            
-            // Calculate totals
-            var cost = 0.0
-            var requests = 0
-            var input = 0
-            var output = 0
-            var cRead = 0
-            var cWrite = 0
-            
-            for session in sessions {
-                cost += session.cost
-                requests += session.requestsCount
-                input += session.inputTokens
-                output += session.outputTokens
-                cRead += session.cacheReadTokens
-                cWrite += session.cacheWriteTokens
-            }
-            
-            DispatchQueue.main.async {
-                self.totalCost = cost
-                self.totalRequests = requests
-                self.totalInputTokens = input
-                self.totalOutputTokens = output
-                self.totalCacheReadTokens = cRead
-                self.totalCacheWriteTokens = cWrite
-                
-                self.recentSessions = Array(sessions.prefix(5))
-                self.projectBreakdown = sortedProjects
-                
-                self.lastRefreshed = Date()
-                self.isScanning = false
-            }
+            self.aggregateAndPublish(allRequests)
         }
     }
     
-    // Parse single JSONL session file
-    private func parseSessionFile(at path: String, projectName: String) -> SessionTelemetry? {
+    // Aggregates raw request events and publishes to main thread properties
+    private func aggregateAndPublish(_ requests: [ClaudeRequestEvent]) {
+        let now = Date()
+        let calendar = Calendar.current
+        
+        // 1. Filter Time Windows
+        let fiveHoursAgo = now.addingTimeInterval(-5 * 3600)
+        let sevenDaysAgo = now.addingTimeInterval(-7 * 24 * 3600)
+        
+        let fiveHourRequestsList = requests.filter { $0.timestamp >= fiveHoursAgo }
+        let weeklyRequestsList = requests.filter { $0.timestamp >= sevenDaysAgo }
+        let fableRequestsList = requests.filter { $0.model.lowercased().contains("fable") }
+        
+        // 2. Aggregate 5H metrics
+        let f5RequestsCount = fiveHourRequestsList.count
+        let f5Input = fiveHourRequestsList.reduce(0, { $0 + $1.inputTokens })
+        let f5Output = fiveHourRequestsList.reduce(0, { $0 + $1.outputTokens })
+        
+        // 3. Aggregate Weekly metrics
+        let wRequestsCount = weeklyRequestsList.count
+        let wInput = weeklyRequestsList.reduce(0, { $0 + $1.inputTokens })
+        let wOutput = weeklyRequestsList.reduce(0, { $0 + $1.outputTokens })
+        
+        // 4. Aggregate Fable metrics
+        let fabRequestsCount = fableRequestsList.count
+        let fabInput = fableRequestsList.reduce(0, { $0 + $1.inputTokens })
+        let fabOutput = fableRequestsList.reduce(0, { $0 + $1.outputTokens })
+        let fabRead = fableRequestsList.reduce(0, { $0 + $1.cacheReadTokens })
+        let fabWrite = fableRequestsList.reduce(0, { $0 + $1.cacheWriteTokens })
+        
+        // 5. Build Model Usage Table
+        var modelDict: [String: ModelUsage] = [:]
+        for req in requests {
+            let cleanName = self.cleanModelName(req.model)
+            var usage = modelDict[cleanName] ?? ModelUsage(
+                modelName: cleanName,
+                requestsCount: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0
+            )
+            usage.requestsCount += 1
+            usage.inputTokens += req.inputTokens
+            usage.outputTokens += req.outputTokens
+            usage.cacheReadTokens += req.cacheReadTokens
+            usage.cacheWriteTokens += req.cacheWriteTokens
+            modelDict[cleanName] = usage
+        }
+        let sortedModelUsage = modelDict.values.sorted(by: { $0.requestsCount > $1.requestsCount })
+        
+        // 6. Group upcoming resets by minute and project
+        var groupedResets: [Date: [String: (requests: Int, tokens: Int)]] = [:]
+        
+        for req in fiveHourRequestsList {
+            let resetDate = req.timestamp.addingTimeInterval(5 * 3600)
+            
+            // Truncate to the nearest minute to group nearby requests
+            let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: resetDate)
+            let minuteDate = calendar.date(from: components) ?? resetDate
+            
+            if groupedResets[minuteDate] == nil {
+                groupedResets[minuteDate] = [:]
+            }
+            
+            let current = groupedResets[minuteDate]?[req.projectName] ?? (requests: 0, tokens: 0)
+            groupedResets[minuteDate]?[req.projectName] = (
+                requests: current.requests + 1,
+                tokens: current.tokens + req.inputTokens + req.outputTokens
+            )
+        }
+        
+        var resets: [QuotaReset] = []
+        for (date, projectMap) in groupedResets {
+            if date > now { // Future resets only
+                for (project, info) in projectMap {
+                    resets.append(QuotaReset(
+                        timestamp: date,
+                        projectName: project,
+                        requestsCount: info.requests,
+                        tokensReturned: info.tokens
+                    ))
+                }
+            }
+        }
+        
+        // Sort chronologically (next reset first)
+        resets.sort(by: { $0.timestamp < $1.timestamp })
+        
+        // Publish to main thread
+        DispatchQueue.main.async {
+            self.fiveHourRequests = f5RequestsCount
+            self.fiveHourInputTokens = f5Input
+            self.fiveHourOutputTokens = f5Output
+            
+            self.weeklyRequests = wRequestsCount
+            self.weeklyInputTokens = wInput
+            self.weeklyOutputTokens = wOutput
+            
+            self.fableRequests = fabRequestsCount
+            self.fableInputTokens = fabInput
+            self.fableOutputTokens = fabOutput
+            self.fableCacheReadTokens = fabRead
+            self.fableCacheWriteTokens = fabWrite
+            
+            self.modelUsageBreakdown = sortedModelUsage
+            self.upcomingResets = resets
+            
+            self.lastRefreshed = Date()
+            self.isScanning = false
+        }
+    }
+    
+    // Parse single JSONL session file and extract all request-level events
+    private func parseSessionFile(at path: String, projectName: String) -> [ClaudeRequestEvent]? {
         guard let fileAttributes = try? FileManager.default.attributesOfItem(atPath: path),
               let fileSize = fileAttributes[.size] as? Int,
               let modificationDate = fileAttributes[.modificationDate] as? Date else {
@@ -242,7 +277,7 @@ class TelemetryManager: ObservableObject {
         if let cached = cached,
            cached.size == fileSize,
            cached.modificationDate == modificationDate {
-            return cached.telemetry
+            return cached.requests
         }
         
         // Read file contents
@@ -252,75 +287,40 @@ class TelemetryManager: ObservableObject {
         
         let lines = content.components(separatedBy: .newlines)
         let decoder = JSONDecoder()
-        
-        var inputTokens = 0
-        var outputTokens = 0
-        var cacheReadTokens = 0
-        var cacheWriteTokens = 0
-        var cost = 0.0
-        var requestsCount = 0
-        var latestModel = "claude-3-5-sonnet"
-        var earliestDate = modificationDate // Fallback date is modification date
-        var hasDateSet = false
+        var requests: [ClaudeRequestEvent] = []
         
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { continue }
             
             if let event = try? decoder.decode(ClaudeLogEvent.self, from: data) {
-                // Parse timestamp if available
-                if let tsStr = event.timestamp, let date = parseTimestamp(tsStr) {
-                    if !hasDateSet {
-                        earliestDate = date
-                        hasDateSet = true
-                    } else if date < earliestDate {
-                        earliestDate = date
-                    }
-                }
+                // Parse timestamp
+                let eventDate = event.timestamp.flatMap(parseTimestamp) ?? modificationDate
                 
-                // Accumulate usage fields from assistant response
+                // If it is an assistant message containing usage, it's a request
                 if event.type == "assistant", let message = event.message, let usage = message.usage {
-                    if let model = message.model {
-                        latestModel = model
-                    }
+                    let model = message.model ?? "claude-3-5-sonnet"
                     
-                    let fileInput = usage.inputTokens ?? 0
-                    let fileOutput = usage.outputTokens ?? 0
-                    let fileCacheRead = usage.cacheReadInputTokens ?? 0
-                    let fileCacheWrite = usage.cacheCreationInputTokens ?? 0
-                    
-                    inputTokens += fileInput
-                    outputTokens += fileOutput
-                    cacheReadTokens += fileCacheRead
-                    cacheWriteTokens += fileCacheWrite
-                    
-                    requestsCount += 1
-                    cost += calculateCost(for: usage, model: message.model ?? "claude-3-5-sonnet")
+                    let req = ClaudeRequestEvent(
+                        timestamp: eventDate,
+                        model: model,
+                        inputTokens: usage.inputTokens ?? 0,
+                        outputTokens: usage.outputTokens ?? 0,
+                        cacheReadTokens: usage.cacheReadInputTokens ?? 0,
+                        cacheWriteTokens: usage.cacheCreationInputTokens ?? 0,
+                        projectName: projectName
+                    )
+                    requests.append(req)
                 }
             }
         }
         
-        let sessionId = (path as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
-        
-        let telemetry = SessionTelemetry(
-            id: sessionId,
-            projectName: projectName,
-            timestamp: earliestDate,
-            inputTokens: inputTokens,
-            outputTokens: outputTokens,
-            cacheReadTokens: cacheReadTokens,
-            cacheWriteTokens: cacheWriteTokens,
-            cost: cost,
-            requestsCount: requestsCount,
-            model: latestModel
-        )
-        
         // Cache the parsed result
         cacheLock.lock()
-        sessionCache[path] = FileCacheInfo(modificationDate: modificationDate, size: fileSize, telemetry: telemetry)
+        sessionCache[path] = FileCacheInfo(modificationDate: modificationDate, size: fileSize, requests: requests)
         cacheLock.unlock()
         
-        return telemetry
+        return requests
     }
     
     // Parse ISO8601 strings with or without fractional seconds
@@ -336,8 +336,7 @@ class TelemetryManager: ObservableObject {
         return formatterWithoutFractional.date(from: tsStr)
     }
     
-    // Extracts and cleans the last folder name from project keys like:
-    // "-Users-golfeno-Desarrollo-strata-database-engine-sql-query-parser"
+    // Clean project folder name key
     private func cleanProjectName(from folderName: String) -> String {
         let components = folderName.split(separator: "-").map(String.init)
         if let last = components.last, !last.isEmpty {
@@ -346,90 +345,91 @@ class TelemetryManager: ObservableObject {
         return folderName
     }
     
-    // Loads beautiful mockup simulated telemetry data for demo purposes
+    // Loads beautiful subscription-focused simulated telemetry data
     private func loadDemoData() {
         isScanning = true
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        DispatchQueue.global(qos: .default).asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
             
             let now = Date()
             
-            let sessions = [
-                SessionTelemetry(
-                    id: "demo-session-1",
-                    projectName: "sql-query-parser",
-                    timestamp: now.addingTimeInterval(-600), // 10 mins ago
-                    inputTokens: 15400,
-                    outputTokens: 4200,
-                    cacheReadTokens: 125000,
-                    cacheWriteTokens: 18000,
-                    cost: 0.1762,
-                    requestsCount: 22,
-                    model: "claude-3-5-sonnet"
+            // Build mock requests spread across different times
+            let mockRequests = [
+                // Last 5 Hours requests
+                ClaudeRequestEvent(
+                    timestamp: now.addingTimeInterval(-15 * 60), // 15 mins ago
+                    model: "claude-fable-5",
+                    inputTokens: 12000,
+                    outputTokens: 4500,
+                    cacheReadTokens: 450000,
+                    cacheWriteTokens: 15000,
+                    projectName: "sql-query-parser"
                 ),
-                SessionTelemetry(
-                    id: "demo-session-2",
-                    projectName: "claude-menubar-telemetry",
-                    timestamp: now.addingTimeInterval(-3600), // 1 hour ago
-                    inputTokens: 45000,
-                    outputTokens: 12500,
-                    cacheReadTokens: 290000,
-                    cacheWriteTokens: 48000,
-                    cost: 0.5995,
-                    requestsCount: 45,
-                    model: "claude-fable-5"
+                ClaudeRequestEvent(
+                    timestamp: now.addingTimeInterval(-45 * 60), // 45 mins ago
+                    model: "claude-3-5-sonnet",
+                    inputTokens: 4500,
+                    outputTokens: 1800,
+                    cacheReadTokens: 120000,
+                    cacheWriteTokens: 8000,
+                    projectName: "claude-menubar-telemetry"
                 ),
-                SessionTelemetry(
-                    id: "demo-session-3",
-                    projectName: "lock-manager-deadlock-detector",
-                    timestamp: now.addingTimeInterval(-86400), // 1 day ago
-                    inputTokens: 8500,
-                    outputTokens: 2100,
-                    cacheReadTokens: 45000,
+                ClaudeRequestEvent(
+                    timestamp: now.addingTimeInterval(-2 * 3600), // 2 hours ago
+                    model: "claude-fable-5",
+                    inputTokens: 25000,
+                    outputTokens: 9200,
+                    cacheReadTokens: 780000,
+                    cacheWriteTokens: 32000,
+                    projectName: "sql-query-parser"
+                ),
+                ClaudeRequestEvent(
+                    timestamp: now.addingTimeInterval(-4 * 3600), // 4 hours ago
+                    model: "claude-3-5-sonnet",
+                    inputTokens: 8000,
+                    outputTokens: 3100,
+                    cacheReadTokens: 220000,
                     cacheWriteTokens: 12000,
-                    cost: 0.1158,
-                    requestsCount: 12,
-                    model: "claude-3-5-sonnet"
+                    projectName: "lock-manager"
                 ),
-                SessionTelemetry(
-                    id: "demo-session-4",
-                    projectName: "beacon-search-engine-learning-to-rank",
-                    timestamp: now.addingTimeInterval(-172800), // 2 days ago
-                    inputTokens: 92000,
-                    outputTokens: 28400,
-                    cacheReadTokens: 890000,
-                    cacheWriteTokens: 124000,
-                    cost: 1.4342,
-                    requestsCount: 94,
-                    model: "claude-fable-5"
+                
+                // Weekly requests (older than 5 hours)
+                ClaudeRequestEvent(
+                    timestamp: now.addingTimeInterval(-12 * 3600), // 12 hours ago
+                    model: "claude-fable-5",
+                    inputTokens: 35000,
+                    outputTokens: 15400,
+                    cacheReadTokens: 950000,
+                    cacheWriteTokens: 52000,
+                    projectName: "claude-menubar-telemetry"
+                ),
+                ClaudeRequestEvent(
+                    timestamp: now.addingTimeInterval(-36 * 3600), // 1.5 days ago
+                    model: "claude-3-5-sonnet",
+                    inputTokens: 15000,
+                    outputTokens: 6200,
+                    cacheReadTokens: 310000,
+                    cacheWriteTokens: 18000,
+                    projectName: "lock-manager"
+                ),
+                ClaudeRequestEvent(
+                    timestamp: now.addingTimeInterval(-5 * 24 * 3600), // 5 days ago
+                    model: "claude-3-5-haiku",
+                    inputTokens: 1200,
+                    outputTokens: 650,
+                    cacheReadTokens: 0,
+                    cacheWriteTokens: 0,
+                    projectName: "sql-query-parser"
                 )
             ]
             
-            let projects = [
-                ProjectTelemetry(name: "beacon-search-engine-learning-to-rank", inputTokens: 92000, outputTokens: 28400, cacheReadTokens: 890000, cacheWriteTokens: 124000, cost: 1.4342, requestsCount: 94),
-                ProjectTelemetry(name: "claude-menubar-telemetry", inputTokens: 45000, outputTokens: 12500, cacheReadTokens: 290000, cacheWriteTokens: 48000, cost: 0.5995, requestsCount: 45),
-                ProjectTelemetry(name: "sql-query-parser", inputTokens: 15400, outputTokens: 4200, cacheReadTokens: 125000, cacheWriteTokens: 18000, cost: 0.1762, requestsCount: 22),
-                ProjectTelemetry(name: "lock-manager-deadlock-detector", inputTokens: 8500, outputTokens: 2100, cacheReadTokens: 45000, cacheWriteTokens: 12000, cost: 0.1158, requestsCount: 12)
-            ]
-            
-            self.recentSessions = sessions
-            self.projectBreakdown = projects
-            
-            self.totalCost = sessions.reduce(0.0, { $0 + $1.cost })
-            self.totalRequests = sessions.reduce(0, { $0 + $1.requestsCount })
-            self.totalInputTokens = sessions.reduce(0, { $0 + $1.inputTokens })
-            self.totalOutputTokens = sessions.reduce(0, { $0 + $1.outputTokens })
-            self.totalCacheReadTokens = sessions.reduce(0, { $0 + $1.cacheReadTokens })
-            self.totalCacheWriteTokens = sessions.reduce(0, { $0 + $1.cacheWriteTokens })
-            
-            self.lastRefreshed = Date()
-            self.isScanning = false
+            self.aggregateAndPublish(mockRequests)
         }
     }
 }
 
-// Log line decode structs
+// MARK: - JSON Decodable Log Structs
 struct ClaudeLogEvent: Decodable {
     let type: String
     let timestamp: String?

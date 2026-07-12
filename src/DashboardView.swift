@@ -3,6 +3,12 @@ import SwiftUI
 struct DashboardView: View {
     @ObservedObject var manager: TelemetryManager
     
+    // Live timer to refresh countdowns every second without scanning logs
+    let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+    
+    // State to trigger UI redraw on timer tick
+    @State private var tick: Bool = false
+    
     var body: some View {
         VStack(spacing: 0) {
             // Header Bar
@@ -15,17 +21,14 @@ struct DashboardView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     
-                    // Main Grid Statistics
+                    // Main Grid Statistics (Subscription Windows)
                     statsGridView
                     
-                    // Cache Savings Indicator (ASCII Style)
-                    cacheSavingsView
+                    // Model Usage Breakdown Table
+                    modelBreakdownSectionView
                     
-                    // Projects Breakdown
-                    projectsSectionView
-                    
-                    // Recent Sessions Section
-                    sessionsSectionView
+                    // Upcoming Quota Resets (ASCII Timeline)
+                    resetsSectionView
                 }
                 .padding(16)
             }
@@ -39,6 +42,9 @@ struct DashboardView: View {
         }
         .frame(width: 380, height: 500)
         .foregroundColor(Theme.textPrimary)
+        .onReceive(timer) { _ in
+            tick.toggle() // Forces redraw of countdown strings
+        }
     }
     
     // MARK: - Subviews
@@ -80,37 +86,37 @@ struct DashboardView: View {
     private var statsGridView: some View {
         VStack(spacing: 1) { // 1px borders via spacing
             HStack(spacing: 1) {
-                // Total Cost Card
+                // 5-Hour rolling usage
                 statCard(
-                    title: "TOTAL_COST",
-                    value: String(format: "$%.4f", manager.totalCost),
-                    subtitle: "USD accumulated",
+                    title: "5H_ROLLING_USE",
+                    value: "\(manager.fiveHourRequests) reqs",
+                    subtitle: "Tokens: \(formatNumber(manager.fiveHourInputTokens + manager.fiveHourOutputTokens))",
                     valueColor: Theme.success
                 )
                 
-                // Total Requests Card
+                // Next reset countdown
                 statCard(
-                    title: "REQUESTS",
-                    value: "\(manager.totalRequests)",
-                    subtitle: "API interactions",
-                    valueColor: Theme.accent
+                    title: "NEXT_RESET_IN",
+                    value: nextResetCountdownString(),
+                    subtitle: "Oldest request expiry",
+                    valueColor: manager.upcomingResets.isEmpty ? Theme.textSecondary : Theme.warning
                 )
             }
             
             HStack(spacing: 1) {
-                // Input Tokens
+                // Weekly usage
                 statCard(
-                    title: "INPUT_TOKENS",
-                    value: formatNumber(manager.totalInputTokens),
-                    subtitle: "Prompt tokens sent",
-                    valueColor: Theme.textPrimary
+                    title: "WEEKLY_USE_7D",
+                    value: "\(manager.weeklyRequests) reqs",
+                    subtitle: "Tokens: \(formatNumber(manager.weeklyInputTokens + manager.weeklyOutputTokens))",
+                    valueColor: Theme.accent
                 )
                 
-                // Output Tokens
+                // Claude Fable usage
                 statCard(
-                    title: "OUTPUT_TOKENS",
-                    value: formatNumber(manager.totalOutputTokens),
-                    subtitle: "Completion tokens",
+                    title: "CLAUDE_FABLE_USE",
+                    value: "\(manager.fableRequests) reqs",
+                    subtitle: "Tokens: \(formatNumber(manager.fableInputTokens + manager.fableOutputTokens))",
                     valueColor: Theme.textPrimary
                 )
             }
@@ -126,7 +132,7 @@ struct DashboardView: View {
                 .foregroundColor(Theme.textSecondary)
             
             Text(value)
-                .font(Theme.monospaced(20, weight: .bold))
+                .font(Theme.monospaced(18, weight: .bold))
                 .foregroundColor(valueColor)
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
@@ -140,51 +146,25 @@ struct DashboardView: View {
         .background(Theme.cardBackground)
     }
     
-    private var cacheSavingsView: some View {
+    private var modelBreakdownSectionView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("PROMPT_CACHE_EFFICIENCY")
+            Text("MODEL_USAGE_SUMMARY")
                 .font(Theme.monospaced(11, weight: .bold))
                 .foregroundColor(Theme.textSecondary)
             
-            VStack(alignment: .leading, spacing: 6) {
-                let totalInput = manager.totalInputTokens + manager.totalCacheReadTokens + manager.totalCacheWriteTokens
-                let cacheHitRatio = totalInput > 0 ? (Double(manager.totalCacheReadTokens) / Double(totalInput) * 100.0) : 0.0
-                
-                ConsoleProgressBar(value: cacheHitRatio)
-                
-                HStack {
-                    Text("Read: \(formatNumber(manager.totalCacheReadTokens))")
-                    Spacer()
-                    Text("Write: \(formatNumber(manager.totalCacheWriteTokens))")
-                }
-                .font(Theme.monospaced(10))
-                .foregroundColor(Theme.textMuted)
-            }
-            .padding(12)
-            .background(Theme.cardBackground)
-            .border(Theme.border, width: 1)
-        }
-    }
-    
-    private var projectsSectionView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("PROJECTS_BREAKDOWN")
-                .font(Theme.monospaced(11, weight: .bold))
-                .foregroundColor(Theme.textSecondary)
-            
-            if manager.projectBreakdown.isEmpty {
-                emptyStateView(message: "No active projects logged.")
+            if manager.modelUsageBreakdown.isEmpty {
+                emptyStateView(message: "No model usage events found.")
             } else {
                 VStack(spacing: 0) {
                     // Table Header
                     HStack {
-                        Text("PROJECT")
+                        Text("MODEL")
                             .frame(width: 140, alignment: .leading)
                         Spacer()
                         Text("REQS")
                             .frame(width: 50, alignment: .trailing)
                         Spacer()
-                        Text("COST")
+                        Text("TOKENS")
                             .frame(width: 80, alignment: .trailing)
                     }
                     .font(Theme.monospaced(10, weight: .bold))
@@ -193,22 +173,22 @@ struct DashboardView: View {
                     .padding(.vertical, 6)
                     .background(Theme.border.opacity(0.3))
                     
-                    ForEach(manager.projectBreakdown) { proj in
+                    ForEach(manager.modelUsageBreakdown) { usage in
                         Divider()
                             .background(Theme.border)
                         
                         HStack {
-                            Text(proj.name)
+                            Text(usage.modelName)
                                 .frame(width: 140, alignment: .leading)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                             Spacer()
-                            Text("\(proj.requestsCount)")
+                            Text("\(usage.requestsCount)")
                                 .frame(width: 50, alignment: .trailing)
                             Spacer()
-                            Text(String(format: "$%.4f", proj.cost))
+                            Text(formatNumber(usage.inputTokens + usage.outputTokens))
                                 .frame(width: 80, alignment: .trailing)
-                                .foregroundColor(Theme.success)
+                                .foregroundColor(usage.modelName.contains("Fable") ? Theme.accent : Theme.textPrimary)
                         }
                         .font(Theme.monospaced(10))
                         .padding(.horizontal, 10)
@@ -221,46 +201,63 @@ struct DashboardView: View {
         }
     }
     
-    private var sessionsSectionView: some View {
+    private var resetsSectionView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("RECENT_SESSIONS")
+            Text("UPCOMING_QUOTA_RESETS (5H ROLL)")
                 .font(Theme.monospaced(11, weight: .bold))
                 .foregroundColor(Theme.textSecondary)
             
-            if manager.recentSessions.isEmpty {
-                emptyStateView(message: "No recent sessions parsed.")
+            if manager.upcomingResets.isEmpty {
+                emptyStateView(message: "No resets pending. Active quota is full.")
             } else {
                 VStack(spacing: 0) {
-                    ForEach(manager.recentSessions) { session in
-                        if session != manager.recentSessions.first {
+                    // Show next 4 resets
+                    ForEach(manager.upcomingResets.prefix(4)) { reset in
+                        if reset != manager.upcomingResets.first {
                             Divider()
                                 .background(Theme.border)
                         }
                         
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(session.projectName)
-                                    .font(Theme.monospaced(11, weight: .bold))
-                                    .foregroundColor(Theme.textPrimary)
-                                    .lineLimit(1)
-                                
-                                Spacer()
-                                
-                                Text(String(format: "$%.4f", session.cost))
-                                    .font(Theme.monospaced(11, weight: .bold))
-                                    .foregroundColor(Theme.success)
-                            }
+                        HStack(spacing: 0) {
+                            // Countdown Tag
+                            Text("[ \(formatCountdown(to: reset.timestamp)) ]")
+                                .font(Theme.monospaced(10, weight: .bold))
+                                .foregroundColor(Theme.warning)
+                                .frame(width: 110, alignment: .leading)
                             
-                            HStack {
-                                Text(session.model.replacingOccurrences(of: "claude-", with: ""))
-                                    .lineLimit(1)
-                                Spacer()
-                                Text(relativeTime(from: session.timestamp))
-                            }
-                            .font(Theme.monospaced(9))
-                            .foregroundColor(Theme.textMuted)
+                            // Arrow
+                            Text("-> ")
+                                .font(Theme.monospaced(10))
+                                .foregroundColor(Theme.textMuted)
+                            
+                            // Return Info
+                            Text("+\(reset.requestsCount) req (\(reset.projectName))")
+                                .font(Theme.monospaced(10))
+                                .foregroundColor(Theme.textPrimary)
+                                .lineLimit(1)
+                            
+                            Spacer()
+                            
+                            // Tokens that expire
+                            Text("-\(formatNumber(reset.tokensReturned)) t")
+                                .font(Theme.monospaced(10))
+                                .foregroundColor(Theme.textSecondary)
                         }
                         .padding(10)
+                    }
+                    
+                    if manager.upcomingResets.count > 4 {
+                        Divider()
+                            .background(Theme.border)
+                        HStack {
+                            Spacer()
+                            Text("... and \(manager.upcomingResets.count - 4) more reset events")
+                                .font(Theme.monospaced(9))
+                                .foregroundColor(Theme.textMuted)
+                                .padding(.vertical, 4)
+                            Spacer()
+                        }
+                        .background(Theme.border.opacity(0.1))
                     }
                 }
                 .background(Theme.cardBackground)
@@ -352,43 +349,33 @@ struct DashboardView: View {
         return formatter.string(from: date)
     }
     
-    private func relativeTime(from date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+    private func formatCountdown(to date: Date) -> String {
+        let diff = date.timeIntervalSince(Date())
+        if diff <= 0 {
+            return "00h 00m 00s"
+        }
+        let hours = Int(diff) / 3600
+        let minutes = (Int(diff) % 3600) / 60
+        let seconds = Int(diff) % 60
+        return String(format: "%02dh %02dm %02ds", hours, minutes, seconds)
     }
-}
-
-// ASCII progress bar custom subview
-struct ConsoleProgressBar: View {
-    let value: Double // 0.0 to 100.0
     
-    var body: some View {
-        HStack(spacing: 2) {
-            Text("[")
-                .foregroundColor(Theme.textSecondary)
-                .font(Theme.monospaced(11))
-            
-            let totalBlocks = 22
-            let filledBlocks = min(max(Int((value / 100.0) * Double(totalBlocks)), 0), totalBlocks)
-            
-            Text(String(repeating: "#", count: filledBlocks))
-                .foregroundColor(Theme.success)
-                .font(Theme.monospaced(11))
-            
-            Text(String(repeating: "-", count: totalBlocks - filledBlocks))
-                .foregroundColor(Theme.textMuted)
-                .font(Theme.monospaced(11))
-            
-            Text("]")
-                .foregroundColor(Theme.textSecondary)
-                .font(Theme.monospaced(11))
-            
-            Spacer()
-            
-            Text(String(format: "%.1f%%", value))
-                .foregroundColor(Theme.textPrimary)
-                .font(Theme.monospaced(11, weight: .bold))
+    private func nextResetCountdownString() -> String {
+        guard let firstReset = manager.upcomingResets.first else {
+            return "FULL_QUOTA"
+        }
+        let diff = firstReset.timestamp.timeIntervalSince(Date())
+        if diff <= 0 {
+            return "00h 00m 00s"
+        }
+        let hours = Int(diff) / 3600
+        let minutes = (Int(diff) % 3600) / 60
+        let seconds = Int(diff) % 60
+        
+        if hours > 0 {
+            return String(format: "%02dh %02dm %02ds", hours, minutes, seconds)
+        } else {
+            return String(format: "%02dm %02ds", minutes, seconds)
         }
     }
 }
