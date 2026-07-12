@@ -1,6 +1,6 @@
 # Claude Menubar Telemetry 📊
 
-A native macOS menu bar utility that provides real-time token usage, prompt caching efficiency, and cost telemetry for your **Claude Code** CLI sessions. 
+A native macOS menu bar utility that provides real-time token usage, prompt caching efficiency, and subscription-quota telemetry for your **Claude Code** CLI sessions. 
 
 The interface is styled with a developer-centric, dark-mode **JetBrains Mono IDE** aesthetic, featuring custom monospaced typography, clean console tables, and terminal-like indicators.
 
@@ -14,9 +14,9 @@ The interface is styled with a developer-centric, dark-mode **JetBrains Mono IDE
 
 - 🚀 **100% Native Swift/SwiftUI**: Compiled directly to a lightweight macOS app bundle (no heavy Electron wrappers). Launches instantly and consumes **< 20MB of RAM**.
 - 📥 **Zero Setup Log Aggregator**: Automatically watches and parses your local Claude Code sessions stored in `~/.claude/projects/` line-by-line. No Anthropic API keys or proxies are required.
-- 💵 **Live Cost Estimator**: Calculates dollar spent in real-time, mapping input/output tokens to current Anthropic developer pricing tiers. It fully supports standard models as well as the new autonomous reasoning **Claude Fable 5** model.
+- ⏱️ **Live Quota Reset Countdown**: Tracks exactly when requests will "fall off" the rolling 5-hour window, with live countdown timers ticking down to show when your subscription limit frees up.
 - ⚡ **Prompt Caching Efficiency**: Displays your caching hit ratios using a retro, ASCII-style command-line progress bar. It lets you monitor caching optimization (which offers a **90% discount** on cache-read tokens).
-- 📂 **Multi-Project Breakdown**: Automatically groups, cleans, and lists token usage and costs across all directories where you use Claude Code.
+- 📂 **Multi-Model Breakdown**: Automatically groups and lists token usage and requests count per model (Claude Fable, Sonnet, Opus, etc.).
 - 🎨 **JetBrains Mono UI**: Designed to blend into a developer's workspace with dark slate backgrounds (`#1E1F22`), grid borders (`#43454A`), and terminal indicators.
 - 🛠️ **Demo Mode**: Includes a simulated mock telemetry toggle in the footer to showcase the user interface immediately.
 
@@ -33,11 +33,10 @@ The app uses the following JetBrains IDE color palette:
 
 The UI is structured as follows when you click the Menu Bar icon (`terminal` system icon):
 1. **Header**: Shows active state (`● LOGS_ACTIVE` or `● DEMO_MODE`).
-2. **Dashboard Grid**: Prominent metrics displaying **Total Cost (USD)**, **Request Count**, **Input Tokens**, and **Output Tokens**.
-3. **ASCII Caching Bar**: Prompts Cache hit ratio bar `[#####----------------] 24.5%` highlighting read vs write performance.
-4. **Projects Breakdown**: Monospaced table breaking down total requests, cost, and token volume per workspace directory.
-5. **Recent Sessions**: Feed of the last 5 session histories, including timestamps and model details.
-6. **Footer Controls**: Options to toggle Demo mode, manually refresh statistics, see the last scan timestamp, or quit.
+2. **Dashboard Grid**: Displays **5H Rolling Use**, **Next Reset Countdown**, **Weekly Use (7D)**, and **Claude Fable Use**.
+3. **Model Usage Summary**: Monospaced table listing request and token metrics grouped per model.
+4. **Upcoming Quota Resets**: ASCII timeline list detailing precisely when and where your previous requests expire from the 5h window, complete with ticking countdown timers.
+5. **Footer Controls**: Options to toggle Demo mode, manually refresh statistics, see the last scan timestamp, or quit.
 
 ---
 
@@ -93,15 +92,11 @@ To install it permanently, simply drag the compiled app inside the `build/` fold
 
 ---
 
-## Supported Model Rates (USD per Million)
+## How the Quota Window Works
 
-| Model Name | Input Rate | Output Rate | Cache Write | Cache Read |
-| :--- | :--- | :--- | :--- | :--- |
-| **Claude Fable 5** | $10.00 | $50.00 | $12.50 | $1.00 |
-| **Claude 3.5 Sonnet** | $3.00 | $15.00 | $3.75 | $0.30 |
-| **Claude 3.5 Haiku** | $0.80 | $4.00 | $1.00 | $0.08 |
-| **Claude 3 Opus** | $15.00 | $75.00 | $18.75 | $1.50 |
-| **Claude 3 Haiku** | $0.25 | $1.25 | $0.31 | $0.03 |
+- **Claude Pro/Enterprise Limits**: Anthropic subscription limits operate on a **rolling 5-hour window** rather than resetting at a fixed time of day (e.g., midnight).
+- **Rolling Expiration**: Every request you make "resets" (freeing up quota slot) exactly **5 hours after** it was initiated.
+- **Ticking Timeline**: This app reads request timestamps directly from your local logs, calculates their `timestamp + 5h` expiry mark, and groups them by minute to display a live countdown showing when your limits will refresh.
 
 ---
 
