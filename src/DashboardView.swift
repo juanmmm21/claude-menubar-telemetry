@@ -3,7 +3,7 @@ import SwiftUI
 struct DashboardView: View {
     @ObservedObject var manager: TelemetryManager
     
-    // Live timer to refresh countdowns every second without scanning logs
+    // Live timer to refresh countdowns and checks every second without scanning logs
     let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
     
     // State to trigger UI redraw on timer tick
@@ -23,6 +23,29 @@ struct DashboardView: View {
             // Scrollable Content
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    
+                    // Warning Banner if Claude Code session is active blocked
+                    if manager.isCurrentlyBlocked {
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(Theme.error)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("LÍMITE DE SESIÓN ALCANZADO")
+                                    .font(Theme.monospaced(10, weight: .bold))
+                                    .foregroundColor(Theme.error)
+                                Text("Tu cuota de terminal está bloqueada temporalmente.")
+                                    .font(Theme.monospaced(9))
+                                    .foregroundColor(Theme.textPrimary)
+                            }
+                            
+                            Spacer()
+                        }
+                        .padding(10)
+                        .background(Theme.error.opacity(0.1))
+                        .border(Theme.error.opacity(0.4), width: 1)
+                    }
                     
                     // Pro Plan Usage Limits (matching screenshot style)
                     proLimitsSectionView
@@ -56,6 +79,7 @@ struct DashboardView: View {
         .foregroundColor(Theme.textPrimary)
         .onReceive(timer) { _ in
             tick.toggle() // Forces redraw of countdown strings
+            manager.updateBlockStateIfNeeded() // Checks timeline for real-time status transitions
         }
     }
     
@@ -77,17 +101,17 @@ struct DashboardView: View {
             // Status Indicator
             HStack(spacing: 6) {
                 Circle()
-                    .fill(manager.isDemoMode ? Theme.warning : Theme.success)
+                    .fill(manager.isDemoMode ? Theme.warning : (manager.isCurrentlyBlocked ? Theme.error : Theme.success))
                     .frame(width: 7, height: 7)
-                Text(manager.isDemoMode ? "DEMO_MODE" : "LOGS_ACTIVE")
+                Text(manager.isDemoMode ? "DEMO_MODE" : (manager.isCurrentlyBlocked ? "RATE_LIMITED" : "LOGS_ACTIVE"))
                     .font(Theme.monospaced(10, weight: .bold))
-                    .foregroundColor(manager.isDemoMode ? Theme.warning : Theme.success)
+                    .foregroundColor(manager.isDemoMode ? Theme.warning : (manager.isCurrentlyBlocked ? Theme.error : Theme.success))
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
                 RoundedRectangle(cornerRadius: 3)
-                    .stroke(manager.isDemoMode ? Theme.warning.opacity(0.4) : Theme.success.opacity(0.4), lineWidth: 1)
+                    .stroke(manager.isDemoMode ? Theme.warning.opacity(0.4) : (manager.isCurrentlyBlocked ? Theme.error.opacity(0.4) : Theme.success.opacity(0.4)), lineWidth: 1)
             )
         }
         .padding(.horizontal, 16)
@@ -103,7 +127,7 @@ struct DashboardView: View {
                 .foregroundColor(Theme.textSecondary)
             
             let pct = min(Double(manager.fiveHourRequests) / Double(manager.fiveHourLimit) * 100.0, 100.0)
-            let barColor = pct >= 90 ? Theme.error : (pct >= 70 ? Theme.warning : Theme.accent)
+            let barColor = (pct >= 90 || manager.isCurrentlyBlocked) ? Theme.error : (pct >= 70 ? Theme.warning : Theme.accent)
             
             HStack(alignment: .center, spacing: 10) {
                 // Info Column (Left)
@@ -118,11 +142,11 @@ struct DashboardView: View {
                 .frame(width: 135, alignment: .leading)
                 
                 // Progress Bar (Middle)
-                CustomProgressBar(value: pct, color: barColor)
+                CustomProgressBar(value: manager.isCurrentlyBlocked ? 100.0 : pct, color: barColor)
                     .frame(height: 6)
                 
                 // Percentage Text (Right)
-                Text("\(Int(pct))% usado")
+                Text(manager.isCurrentlyBlocked ? "100% usado" : "\(Int(pct))% usado")
                     .font(Theme.monospaced(10, weight: .bold))
                     .foregroundColor(Theme.textPrimary)
                     .frame(width: 75, alignment: .trailing)
@@ -481,13 +505,16 @@ struct DashboardView: View {
         if diff <= 0 {
             return "Restablecido"
         }
+        
         let mins = Int(ceil(diff / 60.0))
+        let labelPrefix = manager.isCurrentlyBlocked ? "Límite: restablece en" : "Se restablece en"
+        
         if mins >= 60 {
             let hours = mins / 60
             let remainingMins = mins % 60
-            return "Se restablece en \(hours) h \(remainingMins) min"
+            return "\(labelPrefix) \(hours) h \(remainingMins) min"
         } else {
-            return "Se restablece en \(mins) min"
+            return "\(labelPrefix) \(mins) min"
         }
     }
 }

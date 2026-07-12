@@ -53,6 +53,10 @@ class TelemetryManager: ObservableObject {
     @Published var modelUsageBreakdown: [ModelUsage] = []
     @Published var nextResetDate: Date? = nil
     
+    // Server Rate Limit Block State (Parsed from timeline.jsonl)
+    @Published var isCurrentlyBlocked: Bool = false
+    @Published var blockMessage: String? = nil
+    
     // Configurable User Limits (persisted in UserDefaults)
     @Published var fiveHourLimit: Int {
         didSet {
@@ -156,23 +160,21 @@ class TelemetryManager: ObservableObject {
             let fileManager = FileManager.default
             
             if fileManager.fileExists(atPath: claudePath) {
-                if let projectDirs = try? fileManager.contentsOfDirectory(atPath: claudePath) {
-                    for projectDir in projectDirs {
-                        let projectPath = (claudePath as NSString).appendingPathComponent(projectDir)
-                        var isDir: ObjCBool = false
-                        if fileManager.fileExists(atPath: projectPath, isDirectory: &isDir), isDir.boolValue {
+                let url = URL(fileURLWithPath: claudePath)
+                let enumerator = fileManager.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey], options: [], errorHandler: nil)
+                
+                if let enumerator = enumerator {
+                    for case let fileURL as URL in enumerator {
+                        if fileURL.pathExtension == "jsonl" {
+                            // Extract project name from the path component right below ~/.claude/projects/
+                            let pathComponents = fileURL.pathComponents
+                            var projectName = "unknown"
+                            if let idx = pathComponents.firstIndex(of: "projects"), idx + 1 < pathComponents.count {
+                                projectName = self.cleanProjectName(from: pathComponents[idx + 1])
+                            }
                             
-                            let projectName = self.cleanProjectName(from: projectDir)
-                            
-                            if let sessionFiles = try? fileManager.contentsOfDirectory(atPath: projectPath) {
-                                for sessionFile in sessionFiles {
-                                    if sessionFile.hasSuffix(".jsonl") {
-                                        let filePath = (projectPath as NSString).appendingPathComponent(sessionFile)
-                                        if let fileRequests = self.parseSessionFile(at: filePath, projectName: projectName) {
-                                            allRequests.append(contentsOf: fileRequests)
-                                        }
-                                    }
-                                }
+                            if let fileRequests = self.parseSessionFile(at: fileURL.path, projectName: projectName) {
+                                allRequests.append(contentsOf: fileRequests)
                             }
                         }
                     }
@@ -182,6 +184,134 @@ class TelemetryManager: ObservableObject {
             // Cache requests list to memory
             self.lastScannedRequests = allRequests
             self.aggregateAndPublish(allRequests)
+        }
+    }
+    
+    // Checks if the user is currently blocked by parsing timeline.jsonl files
+    private func checkBlockStateFromTimeline() -> (isBlocked: Bool, resetDate: Date?, message: String?) {
+        let homeDir = FileManager.default.homeDirectoryForCurrentUser
+        let jobsPath = homeDir.appendingPathComponent(".claude/jobs").path
+        let fileManager = FileManager.default
+        
+        var latestTimelineURL: URL? = nil
+        var latestModDate: Date = .distantPast
+        
+        if fileManager.fileExists(atPath: jobsPath) {
+            let url = URL(fileURLWithPath: jobsPath)
+            if let enumerator = fileManager.enumerator(at: url, includingPropertiesForKeys: [.contentModificationDateKey], options: [], errorHandler: nil) {
+                for case let fileURL as URL in enumerator {
+                    if fileURL.lastPathComponent == "timeline.jsonl" {
+                        if let attrs = try? fileManager.attributesOfItem(atPath: fileURL.path),
+                           let modDate = attrs[FileAttributeKey.modificationDate] as? Date {
+                            if modDate > latestModDate {
+                                latestModDate = modDate
+                                latestTimelineURL = fileURL
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        guard let timelineURL = latestTimelineURL,
+              let content = try? String(contentsOfFile: timelineURL.path, encoding: .utf8) else {
+            return (false, nil, nil)
+        }
+        
+        let lines = content.components(separatedBy: .newlines)
+        for line in lines.reversed() {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { continue }
+            
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let state = json["state"] as? String {
+                
+                if state == "blocked" {
+                    let detail = json["detail"] as? String ?? ""
+                    let atStr = json["at"] as? String
+                    let blockTime = atStr.flatMap(parseTimestamp) ?? latestModDate
+                    
+                    if let resetDate = parseResetDateFromDetail(detail, blockTime: blockTime) {
+                        if resetDate > Date() {
+                            return (true, resetDate, detail)
+                        }
+                    }
+                } else if state == "done" || state == "running" || state == "idle" {
+                    return (false, nil, nil)
+                }
+            }
+        }
+        
+        return (false, nil, nil)
+    }
+    
+    // Parse time strings in format "resets 3:40pm" or "15:40"
+    private func parseResetDateFromDetail(_ detail: String, blockTime: Date) -> Date? {
+        guard let resetsRange = detail.range(of: "resets ") else { return nil }
+        let timePart = detail[resetsRange.upperBound...]
+        let components = timePart.split(separator: " ")
+        guard let timeStrComponent = components.first else { return nil }
+        let timeStr = String(timeStrComponent)
+        
+        let calendar = Calendar.current
+        var targetHour = 0
+        var targetMinute = 0
+        
+        if timeStr.lowercased().contains("pm") || timeStr.lowercased().contains("am") {
+            let cleaned = timeStr.lowercased().replacingOccurrences(of: "am", with: "").replacingOccurrences(of: "pm", with: "")
+            let parts = cleaned.split(separator: ":")
+            guard parts.count >= 2,
+                  let hour = Int(parts[0]),
+                  let minute = Int(parts[1]) else { return nil }
+            
+            targetHour = hour
+            targetMinute = minute
+            
+            if timeStr.lowercased().contains("pm") && hour < 12 {
+                targetHour += 12
+            } else if timeStr.lowercased().contains("am") && hour == 12 {
+                targetHour = 0
+            }
+        } else {
+            let parts = timeStr.split(separator: ":")
+            guard parts.count >= 2,
+                  let hour = Int(parts[0]),
+                  let minute = Int(parts[1]) else { return nil }
+            targetHour = hour
+            targetMinute = minute
+        }
+        
+        var resetComponents = calendar.dateComponents([.year, .month, .day], from: blockTime)
+        resetComponents.hour = targetHour
+        resetComponents.minute = targetMinute
+        resetComponents.second = 0
+        
+        if let candidateDate = calendar.date(from: resetComponents) {
+            if candidateDate < blockTime {
+                return calendar.date(byAdding: .day, value: 1, to: candidateDate)
+            }
+            return candidateDate
+        }
+        return nil
+    }
+    
+    // Updates block status and triggers UI redraw if needed
+    func updateBlockStateIfNeeded() {
+        if isDemoMode { return }
+        
+        let blockState = checkBlockStateFromTimeline()
+        
+        if blockState.isBlocked != self.isCurrentlyBlocked || blockState.resetDate != self.nextResetDate {
+            DispatchQueue.main.async {
+                self.isCurrentlyBlocked = blockState.isBlocked
+                self.blockMessage = blockState.message
+                if blockState.isBlocked, let rDate = blockState.resetDate {
+                    self.fiveHourRequests = self.fiveHourLimit
+                    self.nextResetDate = rDate
+                } else {
+                    self.refresh() // Restore standard aggregates
+                }
+            }
         }
     }
     
@@ -271,7 +401,7 @@ class TelemetryManager: ObservableObject {
                 groupedResets[minuteDate] = [:]
             }
             
-            // We find tokens close to this prompt time to estimate tokens freed up
+            // Find tokens close to this prompt time to estimate tokens freed up
             let promptRangeStart = req.timestamp.addingTimeInterval(-30)
             let promptRangeEnd = req.timestamp.addingTimeInterval(30)
             let associatedTokens = fiveHourUsages.filter { 
@@ -308,10 +438,8 @@ class TelemetryManager: ObservableObject {
             let sorted5H = fiveHourPrompts.sorted(by: { $0.timestamp < $1.timestamp })
             
             if f5RequestsCount < self.fiveHourLimit {
-                // Under limit: oldest request expiration increases quota
                 resolvedNextResetDate = sorted5H.first?.timestamp.addingTimeInterval(5 * 3600)
             } else {
-                // Over limit: must wait until enough requests expire to fall below limit
                 let indexNeeded = f5RequestsCount - self.fiveHourLimit
                 if indexNeeded < sorted5H.count {
                     resolvedNextResetDate = sorted5H[indexNeeded].timestamp.addingTimeInterval(5 * 3600)
@@ -321,9 +449,22 @@ class TelemetryManager: ObservableObject {
             }
         }
         
+        // 9. Check real-time rate limit timeline block
+        let blockState = checkBlockStateFromTimeline()
+        
         // Publish to main thread
         DispatchQueue.main.async {
-            self.fiveHourRequests = f5RequestsCount
+            self.isCurrentlyBlocked = blockState.isBlocked
+            self.blockMessage = blockState.message
+            
+            if blockState.isBlocked, let rDate = blockState.resetDate {
+                self.fiveHourRequests = self.fiveHourLimit
+                self.nextResetDate = rDate
+            } else {
+                self.fiveHourRequests = f5RequestsCount
+                self.nextResetDate = resolvedNextResetDate
+            }
+            
             self.fiveHourInputTokens = f5Input
             self.fiveHourOutputTokens = f5Output
             
@@ -339,7 +480,6 @@ class TelemetryManager: ObservableObject {
             
             self.modelUsageBreakdown = sortedModelUsage
             self.upcomingResets = resets
-            self.nextResetDate = resolvedNextResetDate
             
             self.lastRefreshed = Date()
             self.isScanning = false
