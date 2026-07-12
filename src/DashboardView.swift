@@ -55,10 +55,7 @@ struct DashboardView: View {
                     
                     // Model Usage Breakdown Table
                     modelBreakdownSectionView
-                    
-                    // Upcoming Resets Timeline
-                    upcomingResetsTimelineView
-                    
+
                     Divider()
                         .background(Theme.border)
                     
@@ -213,29 +210,26 @@ struct DashboardView: View {
                 
                 Divider()
                     .background(Theme.border)
-                
-                // Row 2: Fable
-                let pctFable = min(Double(manager.fableRequests) / Double(manager.weeklyFableLimit) * 100.0, 100.0)
-                let colorFable = pctFable >= 90 ? Theme.error : (pctFable >= 70 ? Theme.warning : Theme.accent)
-                
+
+                // Row 2: Fable. Anthropic no expone una cuota separada por modelo
+                // (las cabeceras en vivo solo dan la utilización total de la
+                // cuenta), así que aquí no se finge un %: es un contador simple.
                 HStack(alignment: .center, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Fable")
                             .font(Theme.monospaced(11, weight: .bold))
                             .foregroundColor(Theme.textPrimary)
-                        Text("Se restablece dom, 8:00")
+                        Text("No hay cuota separada por modelo")
                             .font(Theme.monospaced(9))
                             .foregroundColor(Theme.textSecondary)
                     }
                     .frame(width: 135, alignment: .leading)
-                    
-                    CustomProgressBar(value: pctFable, color: colorFable)
-                        .frame(height: 6)
-                    
-                    Text("\(Int(pctFable))% usado")
+
+                    Spacer()
+
+                    Text("\(manager.fableRequests) prompts · \(formatNumber(manager.fableInputTokens + manager.fableOutputTokens)) tok")
                         .font(Theme.monospaced(10, weight: .bold))
                         .foregroundColor(Theme.textPrimary)
-                        .frame(width: 75, alignment: .trailing)
                 }
                 .padding(10)
             }
@@ -300,68 +294,7 @@ struct DashboardView: View {
         }
     }
     
-    // 4. Grouped Resets List
-    private var upcomingResetsTimelineView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Línea de tiempo de restablecimientos (5H)")
-                .font(Theme.monospaced(12, weight: .bold))
-                .foregroundColor(Theme.textSecondary)
-            
-            if manager.upcomingResets.isEmpty {
-                emptyStateView(message: "Cuota al 100% disponible. Sin bloqueos.")
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(manager.upcomingResets.prefix(3)) { reset in
-                        if reset != manager.upcomingResets.first {
-                            Divider()
-                                .background(Theme.border)
-                        }
-                        
-                        HStack(spacing: 0) {
-                            Text("[ \(formatCountdown(to: reset.timestamp)) ]")
-                                .font(Theme.monospaced(10, weight: .bold))
-                                .foregroundColor(Theme.warning)
-                                .frame(width: 110, alignment: .leading)
-                            
-                            Text("-> ")
-                                .font(Theme.monospaced(10))
-                                .foregroundColor(Theme.textMuted)
-                            
-                            Text("+\(reset.requestsCount) req (\(reset.projectName))")
-                                .font(Theme.monospaced(10))
-                                .foregroundColor(Theme.textPrimary)
-                                .lineLimit(1)
-                            
-                            Spacer()
-                            
-                            Text("-\(formatNumber(reset.tokensReturned)) t")
-                                .font(Theme.monospaced(10))
-                                .foregroundColor(Theme.textSecondary)
-                        }
-                        .padding(10)
-                    }
-                    
-                    if manager.upcomingResets.count > 3 {
-                        Divider()
-                            .background(Theme.border)
-                        HStack {
-                            Spacer()
-                            Text("... y \(manager.upcomingResets.count - 3) eventos de reinicio más")
-                                .font(Theme.monospaced(9))
-                                .foregroundColor(Theme.textMuted)
-                                .padding(.vertical, 4)
-                            Spacer()
-                        }
-                        .background(Theme.border.opacity(0.1))
-                    }
-                }
-                .background(Theme.cardBackground)
-                .border(Theme.border, width: 1)
-            }
-        }
-    }
-    
-    // 5. Config Drawer at bottom
+    // 4. Config Drawer at bottom
     private var settingsDrawerView: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button(action: {
@@ -385,7 +318,6 @@ struct DashboardView: View {
                         .foregroundColor(Theme.textMuted)
                     stepperRow(title: "Límite sesión 5H:", value: $manager.fiveHourLimit, step: 5, range: 10...200)
                     stepperRow(title: "Límite semanal (Todos):", value: $manager.weeklyLimit, step: 100, range: 200...5000)
-                    stepperRow(title: "Límite semanal (Fable):", value: $manager.weeklyFableLimit, step: 20, range: 50...2000)
                 }
                 .padding(10)
                 .background(Theme.cardBackground)
@@ -508,17 +440,6 @@ struct DashboardView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return formatter.string(from: date)
-    }
-    
-    private func formatCountdown(to date: Date) -> String {
-        let diff = date.timeIntervalSince(Date())
-        if diff <= 0 {
-            return "00h 00m 00s"
-        }
-        let hours = Int(diff) / 3600
-        let minutes = (Int(diff) % 3600) / 60
-        let seconds = Int(diff) % 60
-        return String(format: "%02dh %02dm %02ds", hours, minutes, seconds)
     }
     
     private func sessionResetTimeString() -> String {

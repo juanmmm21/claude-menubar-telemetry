@@ -22,14 +22,6 @@ struct ModelUsage: Identifiable, Equatable {
     var cacheWriteTokens: Int
 }
 
-struct QuotaReset: Identifiable, Equatable {
-    var id: String { "\(timestamp.timeIntervalSince1970)-\(projectName)-\(requestsCount)" }
-    let timestamp: Date          // The exact date when the quota returns (request date + 5 hours)
-    let projectName: String
-    let requestsCount: Int
-    let tokensReturned: Int
-}
-
 class TelemetryManager: ObservableObject {
     // 5-Hour Rolling Window Metrics
     @Published var fiveHourRequests: Int = 0
@@ -48,8 +40,7 @@ class TelemetryManager: ObservableObject {
     @Published var fableCacheReadTokens: Int = 0
     @Published var fableCacheWriteTokens: Int = 0
     
-    // Quota Resets & Model Usage Breakdown
-    @Published var upcomingResets: [QuotaReset] = []
+    // Model Usage Breakdown
     @Published var modelUsageBreakdown: [ModelUsage] = []
     @Published var nextResetDate: Date? = nil
     
@@ -78,13 +69,6 @@ class TelemetryManager: ObservableObject {
             aggregateAndPublish(lastScannedRequests)
         }
     }
-    @Published var weeklyFableLimit: Int {
-        didSet {
-            UserDefaults.standard.set(weeklyFableLimit, forKey: "weeklyFableLimit")
-            aggregateAndPublish(lastScannedRequests)
-        }
-    }
-    
     @Published var isDemoMode: Bool = false {
         didSet {
             // El dato en vivo es real de la cuenta; no tiene sentido mezclarlo con
@@ -117,10 +101,7 @@ class TelemetryManager: ObservableObject {
         
         let wLimit = UserDefaults.standard.integer(forKey: "weeklyLimit")
         self.weeklyLimit = wLimit == 0 ? 1000 : wLimit
-        
-        let wfLimit = UserDefaults.standard.integer(forKey: "weeklyFableLimit")
-        self.weeklyFableLimit = wfLimit == 0 ? 200 : wfLimit
-        
+
         refresh()
     }
     
@@ -409,8 +390,7 @@ class TelemetryManager: ObservableObject {
     // Aggregates raw request events and publishes to main thread properties
     private func aggregateAndPublish(_ requests: [ClaudeRequestEvent]) {
         let now = Date()
-        let calendar = Calendar.current
-        
+
         // 1. Split user prompts vs assistant usage logs
         let prompts = requests.filter { $0.isUserPrompt }
         let usages = requests.filter { !$0.isUserPrompt }
@@ -477,53 +457,8 @@ class TelemetryManager: ObservableObject {
             modelDict[cleanName] = usage
         }
         let sortedModelUsage = modelDict.values.sorted(by: { $0.requestsCount > $1.requestsCount })
-        
-        // 7. Group upcoming resets by minute and project (for 5H list based on prompts)
-        var groupedResets: [Date: [String: (requests: Int, tokens: Int)]] = [:]
-        
-        for req in fiveHourPrompts {
-            let resetDate = req.timestamp.addingTimeInterval(5 * 3600)
-            
-            // Truncate to the nearest minute to group nearby requests
-            let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: resetDate)
-            let minuteDate = calendar.date(from: components) ?? resetDate
-            
-            if groupedResets[minuteDate] == nil {
-                groupedResets[minuteDate] = [:]
-            }
-            
-            // Find tokens close to this prompt time to estimate tokens freed up
-            let promptRangeStart = req.timestamp.addingTimeInterval(-30)
-            let promptRangeEnd = req.timestamp.addingTimeInterval(30)
-            let associatedTokens = fiveHourUsages.filter { 
-                $0.timestamp >= promptRangeStart && $0.timestamp <= promptRangeEnd 
-            }.reduce(0, { $0 + $1.inputTokens + $1.outputTokens })
-            
-            let current = groupedResets[minuteDate]?[req.projectName] ?? (requests: 0, tokens: 0)
-            groupedResets[minuteDate]?[req.projectName] = (
-                requests: current.requests + 1,
-                tokens: current.tokens + associatedTokens
-            )
-        }
-        
-        var resets: [QuotaReset] = []
-        for (date, projectMap) in groupedResets {
-            if date > now { // Future resets only
-                for (project, info) in projectMap {
-                    resets.append(QuotaReset(
-                        timestamp: date,
-                        projectName: project,
-                        requestsCount: info.requests,
-                        tokensReturned: info.tokens
-                    ))
-                }
-            }
-        }
-        
-        // Sort chronologically (next reset first)
-        resets.sort(by: { $0.timestamp < $1.timestamp })
-        
-        // 8. Quota-Aware Block-Free Reset Date Calculation based on user prompts
+
+        // 7. Quota-Aware Block-Free Reset Date Calculation based on user prompts
         var resolvedNextResetDate: Date? = nil
         if f5RequestsCount > 0 {
             let sorted5H = fiveHourPrompts.sorted(by: { $0.timestamp < $1.timestamp })
@@ -540,7 +475,7 @@ class TelemetryManager: ObservableObject {
             }
         }
         
-        // 9. Check real-time rate limit timeline block
+        // 8. Check real-time rate limit timeline block
         let blockState = checkBlockStateFromTimeline()
         
         // Publish to main thread
@@ -576,8 +511,7 @@ class TelemetryManager: ObservableObject {
             self.fableCacheWriteTokens = fabWrite
             
             self.modelUsageBreakdown = sortedModelUsage
-            self.upcomingResets = resets
-            
+
             self.lastRefreshed = Date()
             self.isScanning = false
         }
