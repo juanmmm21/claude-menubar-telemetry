@@ -1,0 +1,10 @@
+# macOS system files
+.DS_Store
+
+# Swift build directories
+.build/
+.swiftpm/
+
+# Application compilation output
+/build/
+*.app
