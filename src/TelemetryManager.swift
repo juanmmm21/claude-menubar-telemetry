@@ -9,6 +9,7 @@ struct ClaudeRequestEvent: Equatable {
     let cacheReadTokens: Int
     let cacheWriteTokens: Int
     let projectName: String
+    let isUserPrompt: Bool // True if it's a manual prompt typed by the user
 }
 
 struct ModelUsage: Identifiable, Equatable {
@@ -189,35 +190,44 @@ class TelemetryManager: ObservableObject {
         let now = Date()
         let calendar = Calendar.current
         
-        // 1. Filter Time Windows
+        // 1. Split user prompts vs assistant usage logs
+        let prompts = requests.filter { $0.isUserPrompt }
+        let usages = requests.filter { !$0.isUserPrompt }
+        
+        // 2. Filter Time Windows
         let fiveHoursAgo = now.addingTimeInterval(-5 * 3600)
         let sevenDaysAgo = now.addingTimeInterval(-7 * 24 * 3600)
         
-        let fiveHourRequestsList = requests.filter { $0.timestamp >= fiveHoursAgo }
-        let weeklyRequestsList = requests.filter { $0.timestamp >= sevenDaysAgo }
+        let fiveHourPrompts = prompts.filter { $0.timestamp >= fiveHoursAgo }
+        let fiveHourUsages = usages.filter { $0.timestamp >= fiveHoursAgo }
         
-        // 2. Aggregate 5H metrics
-        let f5RequestsCount = fiveHourRequestsList.count
-        let f5Input = fiveHourRequestsList.reduce(0, { $0 + $1.inputTokens })
-        let f5Output = fiveHourRequestsList.reduce(0, { $0 + $1.outputTokens })
+        let weeklyPrompts = prompts.filter { $0.timestamp >= sevenDaysAgo }
+        let weeklyUsages = usages.filter { $0.timestamp >= sevenDaysAgo }
         
-        // 3. Aggregate Weekly metrics
-        let wRequestsCount = weeklyRequestsList.count
-        let wInput = weeklyRequestsList.reduce(0, { $0 + $1.inputTokens })
-        let wOutput = weeklyRequestsList.reduce(0, { $0 + $1.outputTokens })
+        // 3. Aggregate 5H metrics (messages count based on prompts, tokens on usages)
+        let f5RequestsCount = fiveHourPrompts.count
+        let f5Input = fiveHourUsages.reduce(0, { $0 + $1.inputTokens })
+        let f5Output = fiveHourUsages.reduce(0, { $0 + $1.outputTokens })
         
-        // 4. Aggregate Fable metrics (weekly window)
-        let weeklyFableRequestsList = weeklyRequestsList.filter { $0.model.lowercased().contains("fable") }
-        let fabRequestsCount = weeklyFableRequestsList.count
-        let fabInput = weeklyFableRequestsList.reduce(0, { $0 + $1.inputTokens })
-        let fabOutput = weeklyFableRequestsList.reduce(0, { $0 + $1.outputTokens })
-        let fabRead = weeklyFableRequestsList.reduce(0, { $0 + $1.cacheReadTokens })
-        let fabWrite = weeklyFableRequestsList.reduce(0, { $0 + $1.cacheWriteTokens })
+        // 4. Aggregate Weekly metrics
+        let wRequestsCount = weeklyPrompts.count
+        let wInput = weeklyUsages.reduce(0, { $0 + $1.inputTokens })
+        let wOutput = weeklyUsages.reduce(0, { $0 + $1.outputTokens })
         
-        // 5. Build Model Usage Table
+        // 5. Aggregate Fable metrics (weekly window)
+        let weeklyFablePrompts = weeklyPrompts.filter { $0.model.lowercased().contains("fable") }
+        let weeklyFableUsages = weeklyUsages.filter { $0.model.lowercased().contains("fable") }
+        
+        let fabRequestsCount = weeklyFablePrompts.count
+        let fabInput = weeklyFableUsages.reduce(0, { $0 + $1.inputTokens })
+        let fabOutput = weeklyFableUsages.reduce(0, { $0 + $1.outputTokens })
+        let fabRead = weeklyFableUsages.reduce(0, { $0 + $1.cacheReadTokens })
+        let fabWrite = weeklyFableUsages.reduce(0, { $0 + $1.cacheWriteTokens })
+        
+        // 6. Build Model Usage Table
         var modelDict: [String: ModelUsage] = [:]
-        for req in requests {
-            let cleanName = self.cleanModelName(req.model)
+        for p in prompts {
+            let cleanName = self.cleanModelName(p.model)
             var usage = modelDict[cleanName] ?? ModelUsage(
                 modelName: cleanName,
                 requestsCount: 0,
@@ -227,18 +237,30 @@ class TelemetryManager: ObservableObject {
                 cacheWriteTokens: 0
             )
             usage.requestsCount += 1
-            usage.inputTokens += req.inputTokens
-            usage.outputTokens += req.outputTokens
-            usage.cacheReadTokens += req.cacheReadTokens
-            usage.cacheWriteTokens += req.cacheWriteTokens
+            modelDict[cleanName] = usage
+        }
+        for u in usages {
+            let cleanName = self.cleanModelName(u.model)
+            var usage = modelDict[cleanName] ?? ModelUsage(
+                modelName: cleanName,
+                requestsCount: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0
+            )
+            usage.inputTokens += u.inputTokens
+            usage.outputTokens += u.outputTokens
+            usage.cacheReadTokens += u.cacheReadTokens
+            usage.cacheWriteTokens += u.cacheWriteTokens
             modelDict[cleanName] = usage
         }
         let sortedModelUsage = modelDict.values.sorted(by: { $0.requestsCount > $1.requestsCount })
         
-        // 6. Group upcoming resets by minute and project (for 5H list)
+        // 7. Group upcoming resets by minute and project (for 5H list based on prompts)
         var groupedResets: [Date: [String: (requests: Int, tokens: Int)]] = [:]
         
-        for req in fiveHourRequestsList {
+        for req in fiveHourPrompts {
             let resetDate = req.timestamp.addingTimeInterval(5 * 3600)
             
             // Truncate to the nearest minute to group nearby requests
@@ -249,10 +271,17 @@ class TelemetryManager: ObservableObject {
                 groupedResets[minuteDate] = [:]
             }
             
+            // We find tokens close to this prompt time to estimate tokens freed up
+            let promptRangeStart = req.timestamp.addingTimeInterval(-30)
+            let promptRangeEnd = req.timestamp.addingTimeInterval(30)
+            let associatedTokens = fiveHourUsages.filter { 
+                $0.timestamp >= promptRangeStart && $0.timestamp <= promptRangeEnd 
+            }.reduce(0, { $0 + $1.inputTokens + $1.outputTokens })
+            
             let current = groupedResets[minuteDate]?[req.projectName] ?? (requests: 0, tokens: 0)
             groupedResets[minuteDate]?[req.projectName] = (
                 requests: current.requests + 1,
-                tokens: current.tokens + req.inputTokens + req.outputTokens
+                tokens: current.tokens + associatedTokens
             )
         }
         
@@ -273,11 +302,10 @@ class TelemetryManager: ObservableObject {
         // Sort chronologically (next reset first)
         resets.sort(by: { $0.timestamp < $1.timestamp })
         
-        // 7. Quota-Aware Block-Free Reset Date Calculation
+        // 8. Quota-Aware Block-Free Reset Date Calculation based on user prompts
         var resolvedNextResetDate: Date? = nil
         if f5RequestsCount > 0 {
-            // Sort requests by timestamp ascending (oldest first)
-            let sorted5H = fiveHourRequestsList.sorted(by: { $0.timestamp < $1.timestamp })
+            let sorted5H = fiveHourPrompts.sorted(by: { $0.timestamp < $1.timestamp })
             
             if f5RequestsCount < self.fiveHourLimit {
                 // Under limit: oldest request expiration increases quota
@@ -318,7 +346,7 @@ class TelemetryManager: ObservableObject {
         }
     }
     
-    // Parse single JSONL session file and extract all request-level events
+    // Parse single JSONL session file using native JSONSerialization for absolute robustness
     private func parseSessionFile(at path: String, projectName: String) -> [ClaudeRequestEvent]? {
         guard let fileAttributes = try? FileManager.default.attributesOfItem(atPath: path),
               let fileSize = fileAttributes[.size] as? Int,
@@ -343,29 +371,70 @@ class TelemetryManager: ObservableObject {
         }
         
         let lines = content.components(separatedBy: .newlines)
-        let decoder = JSONDecoder()
         var requests: [ClaudeRequestEvent] = []
         
+        // Pass 1: Find model used in this session file
+        var detectedModel = "claude-3-5-sonnet"
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { continue }
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let type = json["type"] as? String, type == "assistant",
+               let message = json["message"] as? [String: Any],
+               let model = message["model"] as? String {
+                detectedModel = model
+                break
+            }
+        }
+        
+        // Pass 2: Extract prompts and token usages
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { continue }
             
-            if let event = try? decoder.decode(ClaudeLogEvent.self, from: data) {
-                // Parse timestamp
-                let eventDate = event.timestamp.flatMap(parseTimestamp) ?? modificationDate
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let type = json["type"] as? String {
                 
-                // If it is an assistant message containing usage, it's a request
-                if event.type == "assistant", let message = event.message, let usage = message.usage {
-                    let model = message.model ?? "claude-3-5-sonnet"
+                let tsStr = json["timestamp"] as? String
+                let eventDate = tsStr.flatMap(parseTimestamp) ?? modificationDate
+                
+                if type == "user",
+                   let message = json["message"] as? [String: Any],
+                   let content = message["content"] {
+                    
+                    // If content is a String, it's a manual text prompt written by the user
+                    if content is String {
+                        let req = ClaudeRequestEvent(
+                            timestamp: eventDate,
+                            model: detectedModel,
+                            inputTokens: 0,
+                            outputTokens: 0,
+                            cacheReadTokens: 0,
+                            cacheWriteTokens: 0,
+                            projectName: projectName,
+                            isUserPrompt: true
+                        )
+                        requests.append(req)
+                    }
+                } else if type == "assistant",
+                          let message = json["message"] as? [String: Any],
+                          let usage = message["usage"] as? [String: Any] {
+                    
+                    let model = message["model"] as? String ?? detectedModel
+                    let input = usage["input_tokens"] as? Int ?? 0
+                    let output = usage["output_tokens"] as? Int ?? 0
+                    let cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
+                    let cacheWrite = usage["cache_creation_input_tokens"] as? Int ?? 0
                     
                     let req = ClaudeRequestEvent(
                         timestamp: eventDate,
                         model: model,
-                        inputTokens: usage.inputTokens ?? 0,
-                        outputTokens: usage.outputTokens ?? 0,
-                        cacheReadTokens: usage.cacheReadInputTokens ?? 0,
-                        cacheWriteTokens: usage.cacheCreationInputTokens ?? 0,
-                        projectName: projectName
+                        inputTokens: input,
+                        outputTokens: output,
+                        cacheReadTokens: cacheRead,
+                        cacheWriteTokens: cacheWrite,
+                        projectName: projectName,
+                        isUserPrompt: false
                     )
                     requests.append(req)
                 }
@@ -411,104 +480,33 @@ class TelemetryManager: ObservableObject {
             
             let now = Date()
             
-            // Build mock requests spread across different times
+            // Build mock requests: prompts (prompts count) and usages (tokens)
             let mockRequests = [
-                // Last 5 Hours requests
-                ClaudeRequestEvent(
-                    timestamp: now.addingTimeInterval(-15 * 60), // 15 mins ago
-                    model: "claude-fable-5",
-                    inputTokens: 12000,
-                    outputTokens: 4500,
-                    cacheReadTokens: 450000,
-                    cacheWriteTokens: 15000,
-                    projectName: "sql-query-parser"
-                ),
-                ClaudeRequestEvent(
-                    timestamp: now.addingTimeInterval(-45 * 60), // 45 mins ago
-                    model: "claude-3-5-sonnet",
-                    inputTokens: 4500,
-                    outputTokens: 1800,
-                    cacheReadTokens: 120000,
-                    cacheWriteTokens: 8000,
-                    projectName: "claude-menubar-telemetry"
-                ),
-                ClaudeRequestEvent(
-                    timestamp: now.addingTimeInterval(-2 * 3600), // 2 hours ago
-                    model: "claude-fable-5",
-                    inputTokens: 25000,
-                    outputTokens: 9200,
-                    cacheReadTokens: 780000,
-                    cacheWriteTokens: 32000,
-                    projectName: "sql-query-parser"
-                ),
-                ClaudeRequestEvent(
-                    timestamp: now.addingTimeInterval(-4 * 3600), // 4 hours ago
-                    model: "claude-3-5-sonnet",
-                    inputTokens: 8000,
-                    outputTokens: 3100,
-                    cacheReadTokens: 220000,
-                    cacheWriteTokens: 12000,
-                    projectName: "lock-manager"
-                ),
+                // Session Prompts (Last 5 Hours)
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-15 * 60), model: "claude-fable-5", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "sql-query-parser", isUserPrompt: true),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-45 * 60), model: "claude-3-5-sonnet", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "claude-menubar-telemetry", isUserPrompt: true),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-2 * 3600), model: "claude-fable-5", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "sql-query-parser", isUserPrompt: true),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-4 * 3600), model: "claude-3-5-sonnet", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "lock-manager", isUserPrompt: true),
                 
-                // Weekly requests (older than 5 hours)
-                ClaudeRequestEvent(
-                    timestamp: now.addingTimeInterval(-12 * 3600), // 12 hours ago
-                    model: "claude-fable-5",
-                    inputTokens: 35000,
-                    outputTokens: 15400,
-                    cacheReadTokens: 950000,
-                    cacheWriteTokens: 52000,
-                    projectName: "claude-menubar-telemetry"
-                ),
-                ClaudeRequestEvent(
-                    timestamp: now.addingTimeInterval(-36 * 3600), // 1.5 days ago
-                    model: "claude-3-5-sonnet",
-                    inputTokens: 15000,
-                    outputTokens: 6200,
-                    cacheReadTokens: 310000,
-                    cacheWriteTokens: 18000,
-                    projectName: "lock-manager"
-                ),
-                ClaudeRequestEvent(
-                    timestamp: now.addingTimeInterval(-5 * 24 * 3600), // 5 days ago
-                    model: "claude-3-5-haiku",
-                    inputTokens: 1200,
-                    outputTokens: 650,
-                    cacheReadTokens: 0,
-                    cacheWriteTokens: 0,
-                    projectName: "sql-query-parser"
-                )
+                // Session Tokens (Last 5 Hours)
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-14 * 60), model: "claude-fable-5", inputTokens: 12000, outputTokens: 4500, cacheReadTokens: 450000, cacheWriteTokens: 15000, projectName: "sql-query-parser", isUserPrompt: false),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-44 * 60), model: "claude-3-5-sonnet", inputTokens: 4500, outputTokens: 1800, cacheReadTokens: 120000, cacheWriteTokens: 8000, projectName: "claude-menubar-telemetry", isUserPrompt: false),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-1 * 3600 - 59 * 60), model: "claude-fable-5", inputTokens: 25000, outputTokens: 9200, cacheReadTokens: 780000, cacheWriteTokens: 32000, projectName: "sql-query-parser", isUserPrompt: false),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-3 * 3600 - 59 * 60), model: "claude-3-5-sonnet", inputTokens: 8000, outputTokens: 3100, cacheReadTokens: 220000, cacheWriteTokens: 12000, projectName: "lock-manager", isUserPrompt: false),
+                
+                // Weekly Prompts
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-12 * 3600), model: "claude-fable-5", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "claude-menubar-telemetry", isUserPrompt: true),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-36 * 3600), model: "claude-3-5-sonnet", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "lock-manager", isUserPrompt: true),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-5 * 24 * 3600), model: "claude-3-5-haiku", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "sql-query-parser", isUserPrompt: true),
+                
+                // Weekly Tokens
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-11 * 3600), model: "claude-fable-5", inputTokens: 35000, outputTokens: 15400, cacheReadTokens: 950000, cacheWriteTokens: 52000, projectName: "claude-menubar-telemetry", isUserPrompt: false),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-35 * 3600), model: "claude-3-5-sonnet", inputTokens: 15000, outputTokens: 6200, cacheReadTokens: 310000, cacheWriteTokens: 18000, projectName: "lock-manager", isUserPrompt: false),
+                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-5 * 24 * 3600 + 60), model: "claude-3-5-haiku", inputTokens: 1200, outputTokens: 650, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "sql-query-parser", isUserPrompt: false)
             ]
             
             self.lastScannedRequests = mockRequests
             self.aggregateAndPublish(mockRequests)
         }
-    }
-}
-
-// MARK: - JSON Decodable Log Structs
-struct ClaudeLogEvent: Decodable {
-    let type: String
-    let timestamp: String?
-    let message: ClaudeMessage?
-}
-
-struct ClaudeMessage: Decodable {
-    let model: String?
-    let usage: ClaudeUsage?
-}
-
-struct ClaudeUsage: Decodable {
-    let inputTokens: Int?
-    let outputTokens: Int?
-    let cacheCreationInputTokens: Int?
-    let cacheReadInputTokens: Int?
-    
-    enum CodingKeys: String, CodingKey {
-        case inputTokens = "input_tokens"
-        case outputTokens = "output_tokens"
-        case cacheCreationInputTokens = "cache_creation_input_tokens"
-        case cacheReadInputTokens = "cache_read_input_tokens"
     }
 }
