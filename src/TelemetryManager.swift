@@ -115,21 +115,58 @@ class TelemetryManager: ObservableObject {
     // Normalize model name for display
     func cleanModelName(_ model: String) -> String {
         let m = model.lowercased()
-        if m.contains("fable") {
+        if m == "unknown" {
+            return "Desconocido"
+        } else if m == "<synthetic>" {
+            return "Interno (síntesis)"
+        } else if m.contains("fable") {
             return "Claude Fable 5"
-        } else if m.contains("sonnet-20241022") || m.contains("sonnet-latest") || (m.contains("sonnet") && m.contains("3-5")) {
-            return "Claude 3.5 Sonnet"
-        } else if m.contains("haiku-20241022") || (m.contains("haiku") && m.contains("3-5")) {
-            return "Claude 3.5 Haiku"
         } else if m.contains("opus") {
-            return "Claude 3 Opus"
+            let version = extractVersion(from: m, family: "opus")
+            return version.map { "Claude Opus \($0)" } ?? "Claude Opus"
         } else if m.contains("haiku") {
-            return "Claude 3 Haiku"
+            let version = extractVersion(from: m, family: "haiku")
+            return version.map { "Claude Haiku \($0)" } ?? "Claude Haiku"
         } else if m.contains("sonnet") {
-            return "Claude 3 Sonnet"
+            let version = extractVersion(from: m, family: "sonnet")
+            return version.map { "Claude Sonnet \($0)" } ?? "Claude Sonnet"
         } else {
             return model // Return raw model identifier
         }
+    }
+
+    // Extrae el número de versión adyacente al nombre de familia (p.ej. "5" en
+    // "claude-sonnet-5", "4.5" en "claude-haiku-4-5-20251001"). Soporta tanto el
+    // esquema actual "familia-version" como el legado "version-familia"
+    // (claude-3-5-sonnet-20241022), y descarta sufijos de fecha (8 dígitos) para
+    // no confundirlos con la versión. Los ids de modelo cambian con cada
+    // generación (Claude 3 -> 3.5 -> 5), así que hacer esto genérico evita tener
+    // que volver a tocar este fichero cada vez que sale un modelo nuevo.
+    private func extractVersion(from model: String, family: String) -> String? {
+        let parts = model.split(separator: "-").map(String.init)
+        guard let familyIndex = parts.firstIndex(where: { $0.contains(family) }) else { return nil }
+
+        func isVersionComponent(_ s: String) -> Bool {
+            !s.isEmpty && s.count < 8 && s.allSatisfy { $0.isNumber }
+        }
+
+        var trailing: [String] = []
+        var idx = familyIndex + 1
+        while idx < parts.count, isVersionComponent(parts[idx]) {
+            trailing.append(parts[idx])
+            idx += 1
+        }
+        if !trailing.isEmpty {
+            return trailing.joined(separator: ".")
+        }
+
+        var leading: [String] = []
+        idx = familyIndex - 1
+        while idx >= 0, isVersionComponent(parts[idx]) {
+            leading.insert(parts[idx], at: 0)
+            idx -= 1
+        }
+        return leading.isEmpty ? nil : leading.joined(separator: ".")
     }
     
     // Trigger telemetry refresh
@@ -514,7 +551,10 @@ class TelemetryManager: ObservableObject {
         var requests: [ClaudeRequestEvent] = []
         
         // Pass 1: Find model used in this session file
-        var detectedModel = "claude-3-5-sonnet"
+        // "unknown" en vez de un id de modelo real fijo: si no se detecta ninguno,
+        // cleanModelName lo etiqueta explícitamente como "Desconocido" en vez de
+        // mezclarlo silenciosamente con las cifras de un modelo real.
+        var detectedModel = "unknown"
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { continue }
