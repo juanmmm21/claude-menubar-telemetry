@@ -129,7 +129,7 @@ struct DashboardView: View {
                     .foregroundColor(Theme.textMuted)
             }
 
-            let pct = sessionUtilizationPercent
+            let pct = Double(displaySessionPercent)
             let barColor = pct >= 90 ? Theme.error : (pct >= 70 ? Theme.warning : Theme.accent)
             
             HStack(alignment: .center, spacing: 10) {
@@ -149,7 +149,7 @@ struct DashboardView: View {
                     .frame(height: 6)
                 
                 // Percentage Text (Right)
-                Text("\(Int(pct))% usado")
+                Text("\(displaySessionPercent)% usado")
                     .font(Theme.monospaced(10, weight: .bold))
                     .foregroundColor(Theme.textPrimary)
                     .frame(width: 75, alignment: .trailing)
@@ -436,19 +436,34 @@ struct DashboardView: View {
         return min(Double(manager.fiveHourRequests) / Double(manager.fiveHourLimit) * 100.0, 100.0)
     }
 
+    // Uso residual (<1%) o ventana vacía: mostrar 0% y "Cuota completa".
+    private var displaySessionPercent: Int {
+        if manager.liveQuota != nil {
+            return sessionUtilizationPercent < 1.0 ? 0 : Int(sessionUtilizationPercent)
+        }
+        return manager.fiveHourRequests == 0 ? 0 : Int(sessionUtilizationPercent)
+    }
+
+    private var hasMeaningfulSessionUsage: Bool {
+        if manager.liveQuota != nil {
+            return sessionUtilizationPercent >= 1.0
+        }
+        return manager.fiveHourRequests > 0
+    }
+
     private var isSessionLimitReached: Bool {
         sessionUtilizationPercent >= 99.0
     }
 
     private var sessionStatusLabel: String {
         if isSessionLimitReached { return "RATE_LIMITED" }
-        if sessionUtilizationPercent >= 90 { return "HIGH_USAGE" }
+        if displaySessionPercent >= 90 { return "HIGH_USAGE" }
         return "LOGS_ACTIVE"
     }
 
     private var sessionStatusColor: Color {
         if isSessionLimitReached { return Theme.error }
-        if sessionUtilizationPercent >= 90 { return Theme.warning }
+        if displaySessionPercent >= 90 { return Theme.warning }
         return Theme.success
     }
     
@@ -468,6 +483,9 @@ struct DashboardView: View {
     }
     
     private func sessionResetTimeString() -> String {
+        if !hasMeaningfulSessionUsage && !isSessionLimitReached {
+            return "Cuota completa"
+        }
         guard let resetDate = manager.nextResetDate else {
             return "Cuota completa"
         }

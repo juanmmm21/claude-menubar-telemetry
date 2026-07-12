@@ -237,9 +237,17 @@ class TelemetryManager: ObservableObject {
                     self.liveQuotaUnavailableReason = nil
                     // isRateLimited puede activarse antes del 100% real de utilización
                     self.isCurrentlyBlocked = quota.isRateLimited && quota.fiveHourUtilization >= 0.99
-                    self.nextResetDate = quota.fiveHourReset
+                    // Con uso insignificante, el reset de la API no es informativo
+                    // (p.ej. muestra "6 min" aunque la ventana esté prácticamente vacía).
+                    if quota.fiveHourUtilization >= 0.01 || self.isCurrentlyBlocked {
+                        self.nextResetDate = quota.fiveHourReset
+                    } else {
+                        self.nextResetDate = nil
+                    }
                 case .failure(let error):
                     self.liveQuota = nil
+                    self.nextResetDate = nil
+                    self.aggregateAndPublish(self.lastScannedRequests)
                     switch error {
                     case .notLoggedIn:
                         self.liveQuotaUnavailableReason = "Sin sesión de Claude Code en este Mac"
