@@ -541,9 +541,16 @@ class TelemetryManager: ObservableObject {
                 if type == "user",
                    let message = json["message"] as? [String: Any],
                    let content = message["content"] {
-                    
-                    // If content is a String, it's a manual text prompt written by the user
-                    if content is String {
+
+                    // Content is String both for prompts realmente escritos por el usuario y para
+                    // eventos inyectados por el sistema (task-notifications de jobs en background,
+                    // resúmenes de auto-compact, reinyecciones "isMeta"). Solo "origin.kind == human"
+                    // distingue de forma fiable un prompt humano real; sin este filtro el contador
+                    // semanal llegó a inflarse ~30% con eventos que no consume el propio usuario.
+                    let origin = json["origin"] as? [String: Any]
+                    let isHumanPrompt = (origin?["kind"] as? String) == "human"
+
+                    if content is String, isHumanPrompt {
                         let req = ClaudeRequestEvent(
                             timestamp: eventDate,
                             model: detectedModel,
