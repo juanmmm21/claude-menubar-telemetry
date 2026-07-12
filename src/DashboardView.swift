@@ -119,19 +119,24 @@ struct DashboardView: View {
         .background(Theme.cardBackground)
     }
     
-    // 1. Uso de Claude Code (CLI)
+    // 1. Uso de cuenta (dato real si hay sesión de Claude Code; si no, aproximación por logs del CLI)
     private var proLimitsSectionView: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Uso de Claude Code (CLI)")
+                Text(manager.liveQuota != nil ? "Uso de tu cuenta Claude" : "Uso de Claude Code (CLI)")
                     .font(Theme.monospaced(12, weight: .bold))
                     .foregroundColor(Theme.textSecondary)
-                Text("Solo terminal · no incluye Desktop, web ni móvil")
+                Text(proScopeCaption)
                     .font(Theme.monospaced(8))
                     .foregroundColor(Theme.textMuted)
             }
 
-            let pct = min(Double(manager.fiveHourRequests) / Double(manager.fiveHourLimit) * 100.0, 100.0)
+            let pct: Double = {
+                if let live = manager.liveQuota {
+                    return min(live.fiveHourUtilization * 100.0, 100.0)
+                }
+                return min(Double(manager.fiveHourRequests) / Double(manager.fiveHourLimit) * 100.0, 100.0)
+            }()
             let barColor = (pct >= 90 || manager.isCurrentlyBlocked) ? Theme.error : (pct >= 70 ? Theme.warning : Theme.accent)
             
             HStack(alignment: .center, spacing: 10) {
@@ -162,29 +167,35 @@ struct DashboardView: View {
         }
     }
     
-    // 2. Límites semanales (Claude Code)
+    // 2. Límites semanales (dato real para "Todos los modelos" si hay sesión; Fable siempre es aproximación local)
     private var weeklyLimitsSectionView: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Límites semanales (Claude Code)")
+                Text("Límites semanales")
                     .font(Theme.monospaced(12, weight: .bold))
                     .foregroundColor(Theme.textSecondary)
-                Text("Solo terminal · no incluye Desktop, web ni móvil")
+                Text("Fable siempre es aproximación por logs del CLI")
                     .font(Theme.monospaced(8))
                     .foregroundColor(Theme.textMuted)
             }
 
             VStack(spacing: 0) {
                 // Row 1: Todos los modelos
-                let pctAll = min(Double(manager.weeklyRequests) / Double(manager.weeklyLimit) * 100.0, 100.0)
+                let pctAll: Double = {
+                    if let live = manager.liveQuota {
+                        return min(live.sevenDayUtilization * 100.0, 100.0)
+                    }
+                    return min(Double(manager.weeklyRequests) / Double(manager.weeklyLimit) * 100.0, 100.0)
+                }()
                 let colorAll = pctAll >= 90 ? Theme.error : (pctAll >= 70 ? Theme.warning : Theme.accent)
-                
+                let weeklyResetLabel = manager.liveQuota.map { formatWeeklyReset($0.sevenDayReset) } ?? "Se restablece dom, 8:00"
+
                 HStack(alignment: .center, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Todos los modelos")
                             .font(Theme.monospaced(11, weight: .bold))
                             .foregroundColor(Theme.textPrimary)
-                        Text("Se restablece dom, 8:00")
+                        Text(weeklyResetLabel)
                             .font(Theme.monospaced(9))
                             .foregroundColor(Theme.textSecondary)
                     }
@@ -369,6 +380,9 @@ struct DashboardView: View {
             
             if showSettings {
                 VStack(spacing: 10) {
+                    Text("Solo se usan cuando no hay dato en vivo de la cuenta disponible")
+                        .font(Theme.monospaced(8))
+                        .foregroundColor(Theme.textMuted)
                     stepperRow(title: "Límite sesión 5H:", value: $manager.fiveHourLimit, step: 5, range: 10...200)
                     stepperRow(title: "Límite semanal (Todos):", value: $manager.weeklyLimit, step: 100, range: 200...5000)
                     stepperRow(title: "Límite semanal (Fable):", value: $manager.weeklyFableLimit, step: 20, range: 50...2000)
@@ -526,6 +540,23 @@ struct DashboardView: View {
         } else {
             return "\(labelPrefix) \(mins) min"
         }
+    }
+
+    private var proScopeCaption: String {
+        if manager.liveQuota != nil {
+            return "Dato real de tu cuenta (Desktop + web + CLI)"
+        }
+        if let reason = manager.liveQuotaUnavailableReason {
+            return "Aproximación por logs del CLI · \(reason)"
+        }
+        return "Solo terminal · no incluye Desktop, web ni móvil"
+    }
+
+    private func formatWeeklyReset(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "es_ES")
+        formatter.dateFormat = "E, HH:mm"
+        return "Se restablece \(formatter.string(from: date))"
     }
 }
 

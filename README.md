@@ -14,6 +14,7 @@ The interface is styled with a developer-centric, dark-mode **JetBrains Mono IDE
 
 - 🚀 **100% Native Swift/SwiftUI**: Compiled directly to a lightweight macOS app bundle (no heavy Electron wrappers). Launches instantly and consumes **< 20MB of RAM**.
 - 📥 **Zero Setup Log Aggregator**: Automatically watches and parses your local Claude Code sessions stored in `~/.claude/projects/` line-by-line. No Anthropic API keys or proxies are required.
+- 🌐 **Real account-wide quota (optional)**: If you're signed in to Claude Code on this Mac, the app reuses that existing session to read your *actual* rate-limit usage across Desktop, web and CLI combined — not just an estimate from local CLI logs. See [Privacy & Safety](#privacy--safety) for exactly what that involves.
 - ⏱️ **Live Quota Reset Countdown**: Tracks exactly when requests will "fall off" the rolling 5-hour window, with live countdown timers ticking down to show when your subscription limit frees up.
 - ⚡ **Prompt Caching Efficiency**: Displays your caching hit ratios using a retro, ASCII-style command-line progress bar. It lets you monitor caching optimization (which offers a **90% discount** on cache-read tokens).
 - 📂 **Multi-Model Breakdown**: Automatically groups and lists token usage and requests count per model (Claude Fable, Sonnet, Opus, etc.).
@@ -42,8 +43,11 @@ The UI is structured as follows when you click the Menu Bar icon (`terminal` sys
 
 ## Privacy & Safety
 
-- **Private & Local-Only**: The application runs completely offline and locally. It does not send any statistics, telemetry, logs, or keys to third-party endpoints.
-- **Read-Only**: The utility reads logs purely to accumulate numerical token values. It does not write to, delete, or modify any of your project or Claude session files.
+- **Local-first, with one optional real network call**: by default the app reads your local Claude Code session logs (`~/.claude/projects/**/*.jsonl`) entirely offline to *approximate* your usage. If you're signed in to Claude Code on this Mac, it additionally reuses that existing OAuth session — stored by Claude Code itself in the macOS Keychain under the item `Claude Code-credentials` — to make a single, minimal (`max_tokens: 1`) authenticated request to `api.anthropic.com` roughly once a minute, and reads the real account-wide rate-limit percentages from that response's headers. This is the only way to show the *exact* quota used across Desktop, web and CLI combined; a local log parser alone cannot see usage that happened outside the CLI.
+- **The app never writes to that Keychain item and never sends your token anywhere except Anthropic's own API**: it only *reads* the credential Claude Code already created. The token is used solely as the `Authorization` header of that one request to `api.anthropic.com` — it is never logged, cached to disk, or transmitted to any third party.
+- **Native macOS permission prompt on first use**: because this app isn't signed with the same certificate as the Claude Code CLI, macOS will show its own system dialog the first time it tries to read that Keychain item, asking you to allow or deny access. This is standard macOS behavior for any app reading another app's Keychain item, not something this project can (or should) bypass.
+- **Fails closed, not open**: if you deny that prompt, aren't logged into Claude Code, your session has expired, or you're offline, the app silently falls back to the local, log-only approximation described above — it never crashes or blocks waiting on the network.
+- **Read-only on your session logs**: local log parsing only accumulates numeric token values; it never writes to, deletes, or modifies your project or Claude session files.
 
 ---
 
@@ -86,6 +90,7 @@ To install it permanently, simply drag the compiled app inside the `build/` fold
     ├── AppDelegate.swift    # Status bar button and NSPopover controllers
     ├── DashboardView.swift  # SwiftUI monospaced interface
     ├── TelemetryManager.swift# Log parsing logic, cache system & rates
+    ├── AccountUsageService.swift # Optional live account-quota lookup (Keychain + api.anthropic.com)
     ├── Theme.swift          # Color palette & JetBrains Mono typography tokens
     └── AppIcon.png          # High-resolution source icon (1024x1024)
 ```
