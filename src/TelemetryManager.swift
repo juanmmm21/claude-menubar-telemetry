@@ -56,6 +56,21 @@ class TelemetryManager: ObservableObject {
     private let accountUsageService = AccountUsageService()
     private var lastLiveQuotaAttempt: Date = .distantPast
 
+    // Iniciar con macOS (SMAppService, macOS 13+). El valor inicial refleja el
+    // estado real ya registrado en el sistema, no un default local.
+    let launchAtLoginSupported = LaunchAtLoginService.isSupported
+    @Published var launchAtLoginEnabled: Bool = LaunchAtLoginService.isEnabled {
+        didSet {
+            guard oldValue != launchAtLoginEnabled else { return }
+            // Si el registro falla (permiso denegado, etc.), el toggle vuelve a
+            // reflejar el estado real del sistema en vez de mentir sobre lo que
+            // el usuario acaba de marcar.
+            if !LaunchAtLoginService.setEnabled(launchAtLoginEnabled) {
+                launchAtLoginEnabled = LaunchAtLoginService.isEnabled
+            }
+        }
+    }
+
     // Configurable User Limits (persisted in UserDefaults)
     @Published var fiveHourLimit: Int {
         didSet {

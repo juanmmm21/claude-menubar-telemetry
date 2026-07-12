@@ -303,17 +303,32 @@ struct DashboardView: View {
                 }
             }) {
                 HStack {
-                    Text(showSettings ? "[-] OCULTAR CONFIGURACIÓN" : "[+] AJUSTAR LÍMITES DE SUSCRIPCIÓN")
+                    Text(showSettings ? "[-] OCULTAR CONFIGURACIÓN" : "[+] CONFIGURACIÓN")
                         .font(Theme.monospaced(10, weight: .bold))
                         .foregroundColor(Theme.accent)
                     Spacer()
                 }
             }
             .buttonStyle(.plain)
-            
+
             if showSettings {
                 VStack(spacing: 10) {
-                    Text("Solo se usan cuando no hay dato en vivo de la cuenta disponible")
+                    if manager.launchAtLoginSupported {
+                        HStack {
+                            Toggle(isOn: $manager.launchAtLoginEnabled) {
+                                Text("Iniciar con macOS")
+                                    .font(Theme.monospaced(10, weight: .bold))
+                                    .foregroundColor(Theme.textPrimary)
+                            }
+                            .toggleStyle(.checkbox)
+                            Spacer()
+                        }
+
+                        Divider()
+                            .background(Theme.border)
+                    }
+
+                    Text("Los límites de abajo solo se usan cuando no hay dato en vivo de la cuenta disponible")
                         .font(Theme.monospaced(8))
                         .foregroundColor(Theme.textMuted)
                     stepperRow(title: "Límite sesión 5H:", value: $manager.fiveHourLimit, step: 5, range: 10...200)
