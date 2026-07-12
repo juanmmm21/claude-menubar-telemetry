@@ -1,24 +1,24 @@
-# Claude Menubar Telemetry 📊
+# Claude Menubar Telemetry
 
 A native macOS menu bar utility that provides real-time token usage and subscription-quota telemetry for your **Claude Code** CLI sessions.
 
 The interface is styled with a developer-centric, dark-mode **JetBrains Mono IDE** aesthetic, featuring custom monospaced typography, clean console tables, and terminal-like indicators.
 
 <div align="center">
-  <img src="src/AppIcon.png" width="128" height="128" alt="Claude Telemetry Icon" />
+  <img src="docs/screenshot.png" width="380" alt="Claude Menubar Telemetry popover showing session and weekly usage" />
 </div>
 
 ---
 
 ## Key Features
 
-- 🚀 **100% Native Swift/SwiftUI**: Compiled directly to a lightweight macOS app bundle (no heavy Electron wrappers). Launches instantly and consumes **< 20MB of RAM**.
-- 📥 **Zero Setup Log Aggregator**: Automatically watches and parses your local Claude Code sessions stored in `~/.claude/projects/` line-by-line. No Anthropic API keys or proxies are required.
-- 🌐 **Real account-wide quota (optional)**: If you're signed in to Claude Code on this Mac, the app reuses that existing session to read your *actual* rate-limit usage across Desktop, web and CLI combined — not just an estimate from local CLI logs. See [Privacy & Safety](#privacy--safety) for exactly what that involves.
-- ⏱️ **Live Reset Countdown**: Shows exactly when your current 5-hour session window resets, ticking down in real time.
-- 📂 **Multi-Model Breakdown**: Automatically groups and lists token usage and requests count per model (Claude Fable, Sonnet, Opus, etc.).
-- 🎨 **JetBrains Mono UI**: Designed to blend into a developer's workspace with dark slate backgrounds (`#1E1F22`), grid borders (`#43454A`), and terminal indicators.
-- 🛠️ **Demo Mode**: Includes a simulated mock telemetry toggle in the footer to showcase the user interface immediately.
+- **100% Native Swift/SwiftUI**: Compiled directly to a lightweight macOS app bundle (no heavy Electron wrappers). Launches instantly and consumes **< 20MB of RAM**.
+- **Zero Setup Log Aggregator**: Automatically watches and parses your local Claude Code sessions stored in `~/.claude/projects/` line-by-line. No Anthropic API keys or proxies are required.
+- **Real account-wide quota (optional)**: If you're signed in to Claude Code on this Mac, the app reuses that existing session to read your *actual* rate-limit usage across Desktop, web and CLI combined — not just an estimate from local CLI logs. See [Privacy & Safety](#privacy--safety) for exactly what that involves.
+- **Live Reset Countdown**: Shows exactly when your current 5-hour session window resets, ticking down in real time.
+- **Multi-Model Breakdown**: Automatically groups and lists token usage and requests count per model (Claude Fable, Sonnet, Opus, etc.).
+- **JetBrains Mono UI**: Designed to blend into a developer's workspace with dark slate backgrounds (`#1E1F22`), grid borders (`#43454A`), and terminal indicators.
+- **Demo Mode**: Includes a simulated mock telemetry toggle in the footer to showcase the user interface immediately.
 
 ---
 
@@ -106,5 +106,5 @@ To install it permanently, simply drag the compiled app inside the `build/` fold
 
 ## Author
 
-Desarrollado por **juanmmm21** (https://github.com/juanmmm21). 
+Built by **juanmmm21** (https://github.com/juanmmm21).
 *Senior Developer & Observability enthusiast.*
