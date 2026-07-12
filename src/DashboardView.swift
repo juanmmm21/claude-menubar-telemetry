@@ -119,13 +119,18 @@ struct DashboardView: View {
         .background(Theme.cardBackground)
     }
     
-    // 1. Límites de uso del plan Pro
+    // 1. Uso de Claude Code (CLI)
     private var proLimitsSectionView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Límites de uso del plan Pro")
-                .font(Theme.monospaced(12, weight: .bold))
-                .foregroundColor(Theme.textSecondary)
-            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Uso de Claude Code (CLI)")
+                    .font(Theme.monospaced(12, weight: .bold))
+                    .foregroundColor(Theme.textSecondary)
+                Text("Solo terminal · no incluye Desktop, web ni móvil")
+                    .font(Theme.monospaced(8))
+                    .foregroundColor(Theme.textMuted)
+            }
+
             let pct = min(Double(manager.fiveHourRequests) / Double(manager.fiveHourLimit) * 100.0, 100.0)
             let barColor = (pct >= 90 || manager.isCurrentlyBlocked) ? Theme.error : (pct >= 70 ? Theme.warning : Theme.accent)
             
@@ -157,13 +162,18 @@ struct DashboardView: View {
         }
     }
     
-    // 2. Límites semanales
+    // 2. Límites semanales (Claude Code)
     private var weeklyLimitsSectionView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Límites semanales")
-                .font(Theme.monospaced(12, weight: .bold))
-                .foregroundColor(Theme.textSecondary)
-            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Límites semanales (Claude Code)")
+                    .font(Theme.monospaced(12, weight: .bold))
+                    .foregroundColor(Theme.textSecondary)
+                Text("Solo terminal · no incluye Desktop, web ni móvil")
+                    .font(Theme.monospaced(8))
+                    .foregroundColor(Theme.textMuted)
+            }
+
             VStack(spacing: 0) {
                 // Row 1: Todos los modelos
                 let pctAll = min(Double(manager.weeklyRequests) / Double(manager.weeklyLimit) * 100.0, 100.0)
