@@ -102,12 +102,19 @@ final class AccountUsageService {
         }
         let status = header("anthropic-ratelimit-unified-status") ?? "allowed"
         return UnifiedQuota(
-            fiveHourUtilization: fiveHUtil,
+            fiveHourUtilization: normalizeUtilization(fiveHUtil),
             fiveHourReset: Date(timeIntervalSince1970: fiveHReset),
-            sevenDayUtilization: sevenDUtil,
+            sevenDayUtilization: normalizeUtilization(sevenDUtil),
             sevenDayReset: Date(timeIntervalSince1970: sevenDReset),
             isRateLimited: status != "allowed"
         )
+    }
+
+    // Anthropic envía 0.0–1.0; si alguna cabecera viniera como 0–100, no debe
+    // multiplicarse dos veces y acabar mostrando 100% por error.
+    private static func normalizeUtilization(_ value: Double) -> Double {
+        let fraction = value > 1.0 ? value / 100.0 : value
+        return min(max(fraction, 0), 1.0)
     }
 
     private static func readCredentials() throws -> CredentialsFile.OAuth {

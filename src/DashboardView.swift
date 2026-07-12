@@ -24,8 +24,9 @@ struct DashboardView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     
-                    // Warning Banner if Claude Code session is active blocked
-                    if manager.isCurrentlyBlocked {
+                    // Solo avisar de límite alcanzado cuando el uso real está al 99% o más.
+                    // isRateLimited de la API puede activarse antes (p.ej. al 91%).
+                    if isSessionLimitReached {
                         HStack(spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .font(.system(size: 14, weight: .bold))
@@ -98,17 +99,17 @@ struct DashboardView: View {
             // Status Indicator
             HStack(spacing: 6) {
                 Circle()
-                    .fill(manager.isDemoMode ? Theme.warning : (manager.isCurrentlyBlocked ? Theme.error : Theme.success))
+                    .fill(sessionStatusColor)
                     .frame(width: 7, height: 7)
-                Text(manager.isDemoMode ? "DEMO_MODE" : (manager.isCurrentlyBlocked ? "RATE_LIMITED" : "LOGS_ACTIVE"))
+                Text(sessionStatusLabel)
                     .font(Theme.monospaced(10, weight: .bold))
-                    .foregroundColor(manager.isDemoMode ? Theme.warning : (manager.isCurrentlyBlocked ? Theme.error : Theme.success))
+                    .foregroundColor(sessionStatusColor)
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(
                 RoundedRectangle(cornerRadius: 3)
-                    .stroke(manager.isDemoMode ? Theme.warning.opacity(0.4) : (manager.isCurrentlyBlocked ? Theme.error.opacity(0.4) : Theme.success.opacity(0.4)), lineWidth: 1)
+                    .stroke(sessionStatusColor.opacity(0.4), lineWidth: 1)
             )
         }
         .padding(.horizontal, 16)
@@ -128,13 +129,8 @@ struct DashboardView: View {
                     .foregroundColor(Theme.textMuted)
             }
 
-            let pct: Double = {
-                if let live = manager.liveQuota {
-                    return min(live.fiveHourUtilization * 100.0, 100.0)
-                }
-                return min(Double(manager.fiveHourRequests) / Double(manager.fiveHourLimit) * 100.0, 100.0)
-            }()
-            let barColor = (pct >= 90 || manager.isCurrentlyBlocked) ? Theme.error : (pct >= 70 ? Theme.warning : Theme.accent)
+            let pct = sessionUtilizationPercent
+            let barColor = pct >= 90 ? Theme.error : (pct >= 70 ? Theme.warning : Theme.accent)
             
             HStack(alignment: .center, spacing: 10) {
                 // Info Column (Left)
@@ -149,11 +145,11 @@ struct DashboardView: View {
                 .frame(width: 135, alignment: .leading)
                 
                 // Progress Bar (Middle)
-                CustomProgressBar(value: manager.isCurrentlyBlocked ? 100.0 : pct, color: barColor)
+                CustomProgressBar(value: pct, color: barColor)
                     .frame(height: 6)
                 
                 // Percentage Text (Right)
-                Text(manager.isCurrentlyBlocked ? "100% usado" : "\(Int(pct))% usado")
+                Text("\(Int(pct))% usado")
                     .font(Theme.monospaced(10, weight: .bold))
                     .foregroundColor(Theme.textPrimary)
                     .frame(width: 75, alignment: .trailing)
@@ -392,15 +388,6 @@ struct DashboardView: View {
     
     private var footerView: some View {
         HStack {
-            Toggle(isOn: $manager.isDemoMode) {
-                Text("DEMO")
-                    .font(Theme.monospaced(10, weight: .bold))
-                    .foregroundColor(Theme.textSecondary)
-            }
-            .toggleStyle(.checkbox)
-            
-            Spacer()
-            
             if manager.isScanning {
                 ProgressView()
                     .scaleEffect(0.5)
@@ -441,6 +428,29 @@ struct DashboardView: View {
     }
     
     // MARK: - Helpers
+
+    private var sessionUtilizationPercent: Double {
+        if let live = manager.liveQuota {
+            return min(live.fiveHourUtilization * 100.0, 100.0)
+        }
+        return min(Double(manager.fiveHourRequests) / Double(manager.fiveHourLimit) * 100.0, 100.0)
+    }
+
+    private var isSessionLimitReached: Bool {
+        sessionUtilizationPercent >= 99.0
+    }
+
+    private var sessionStatusLabel: String {
+        if isSessionLimitReached { return "RATE_LIMITED" }
+        if sessionUtilizationPercent >= 90 { return "HIGH_USAGE" }
+        return "LOGS_ACTIVE"
+    }
+
+    private var sessionStatusColor: Color {
+        if isSessionLimitReached { return Theme.error }
+        if sessionUtilizationPercent >= 90 { return Theme.warning }
+        return Theme.success
+    }
     
     private func formatNumber(_ num: Int) -> String {
         if num >= 1_000_000 {
@@ -467,7 +477,7 @@ struct DashboardView: View {
         }
         
         let mins = Int(ceil(diff / 60.0))
-        let labelPrefix = manager.isCurrentlyBlocked ? "Límite: restablece en" : "Se restablece en"
+        let labelPrefix = isSessionLimitReached ? "Límite: restablece en" : "Se restablece en"
         
         if mins >= 60 {
             let hours = mins / 60

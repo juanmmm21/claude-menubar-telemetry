@@ -84,16 +84,6 @@ class TelemetryManager: ObservableObject {
             aggregateAndPublish(lastScannedRequests)
         }
     }
-    @Published var isDemoMode: Bool = false {
-        didSet {
-            // El dato en vivo es real de la cuenta; no tiene sentido mezclarlo con
-            // datos simulados de demo, así que se limpia al entrar/salir de demo.
-            liveQuota = nil
-            liveQuotaUnavailableReason = nil
-            refresh()
-        }
-    }
-    
     @Published var lastRefreshed: Date = Date()
     @Published var isScanning: Bool = false
     
@@ -179,11 +169,6 @@ class TelemetryManager: ObservableObject {
     
     // Trigger telemetry refresh
     func refresh() {
-        if isDemoMode {
-            loadDemoData()
-            return
-        }
-        
         // Ensure parsing calls originate sequentially on the main thread
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
@@ -250,7 +235,8 @@ class TelemetryManager: ObservableObject {
                 case .success(let quota):
                     self.liveQuota = quota
                     self.liveQuotaUnavailableReason = nil
-                    self.isCurrentlyBlocked = quota.isRateLimited
+                    // isRateLimited puede activarse antes del 100% real de utilización
+                    self.isCurrentlyBlocked = quota.isRateLimited && quota.fiveHourUtilization >= 0.99
                     self.nextResetDate = quota.fiveHourReset
                 case .failure(let error):
                     self.liveQuota = nil
@@ -381,7 +367,6 @@ class TelemetryManager: ObservableObject {
     
     // Updates block status and triggers UI redraw if needed
     func updateBlockStateIfNeeded() {
-        if isDemoMode { return }
         // Con dato en vivo, el estado de bloqueo ya lo marca refreshLiveQuotaIfDue()
         // con la señal real de la cuenta; no lo pisamos con el parseo de timeline.jsonl.
         if liveQuota != nil { return }
@@ -667,42 +652,4 @@ class TelemetryManager: ObservableObject {
         return folderName
     }
     
-    // Loads beautiful subscription-focused simulated telemetry data
-    private func loadDemoData() {
-        isScanning = true
-        
-        DispatchQueue.global(qos: .default).asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self = self else { return }
-            
-            let now = Date()
-            
-            // Build mock requests: prompts (prompts count) and usages (tokens)
-            let mockRequests = [
-                // Session Prompts (Last 5 Hours)
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-15 * 60), model: "claude-fable-5", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "sql-query-parser", isUserPrompt: true),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-45 * 60), model: "claude-3-5-sonnet", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "claude-menubar-telemetry", isUserPrompt: true),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-2 * 3600), model: "claude-fable-5", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "sql-query-parser", isUserPrompt: true),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-4 * 3600), model: "claude-3-5-sonnet", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "lock-manager", isUserPrompt: true),
-                
-                // Session Tokens (Last 5 Hours)
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-14 * 60), model: "claude-fable-5", inputTokens: 12000, outputTokens: 4500, cacheReadTokens: 450000, cacheWriteTokens: 15000, projectName: "sql-query-parser", isUserPrompt: false),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-44 * 60), model: "claude-3-5-sonnet", inputTokens: 4500, outputTokens: 1800, cacheReadTokens: 120000, cacheWriteTokens: 8000, projectName: "claude-menubar-telemetry", isUserPrompt: false),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-1 * 3600 - 59 * 60), model: "claude-fable-5", inputTokens: 25000, outputTokens: 9200, cacheReadTokens: 780000, cacheWriteTokens: 32000, projectName: "sql-query-parser", isUserPrompt: false),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-3 * 3600 - 59 * 60), model: "claude-3-5-sonnet", inputTokens: 8000, outputTokens: 3100, cacheReadTokens: 220000, cacheWriteTokens: 12000, projectName: "lock-manager", isUserPrompt: false),
-                
-                // Weekly Prompts
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-12 * 3600), model: "claude-fable-5", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "claude-menubar-telemetry", isUserPrompt: true),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-36 * 3600), model: "claude-3-5-sonnet", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "lock-manager", isUserPrompt: true),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-5 * 24 * 3600), model: "claude-3-5-haiku", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "sql-query-parser", isUserPrompt: true),
-                
-                // Weekly Tokens
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-11 * 3600), model: "claude-fable-5", inputTokens: 35000, outputTokens: 15400, cacheReadTokens: 950000, cacheWriteTokens: 52000, projectName: "claude-menubar-telemetry", isUserPrompt: false),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-35 * 3600), model: "claude-3-5-sonnet", inputTokens: 15000, outputTokens: 6200, cacheReadTokens: 310000, cacheWriteTokens: 18000, projectName: "lock-manager", isUserPrompt: false),
-                ClaudeRequestEvent(timestamp: now.addingTimeInterval(-5 * 24 * 3600 + 60), model: "claude-3-5-haiku", inputTokens: 1200, outputTokens: 650, cacheReadTokens: 0, cacheWriteTokens: 0, projectName: "sql-query-parser", isUserPrompt: false)
-            ]
-            
-            self.lastScannedRequests = mockRequests
-            self.aggregateAndPublish(mockRequests)
-        }
-    }
 }
