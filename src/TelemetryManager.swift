@@ -50,6 +50,27 @@ class TelemetryManager: ObservableObject {
     // Quota Resets & Model Usage Breakdown
     @Published var upcomingResets: [QuotaReset] = []
     @Published var modelUsageBreakdown: [ModelUsage] = []
+    @Published var nextResetDate: Date? = nil
+    
+    // Configurable User Limits (persisted in UserDefaults)
+    @Published var fiveHourLimit: Int {
+        didSet {
+            UserDefaults.standard.set(fiveHourLimit, forKey: "fiveHourLimit")
+            aggregateAndPublish(lastScannedRequests)
+        }
+    }
+    @Published var weeklyLimit: Int {
+        didSet {
+            UserDefaults.standard.set(weeklyLimit, forKey: "weeklyLimit")
+            aggregateAndPublish(lastScannedRequests)
+        }
+    }
+    @Published var weeklyFableLimit: Int {
+        didSet {
+            UserDefaults.standard.set(weeklyFableLimit, forKey: "weeklyFableLimit")
+            aggregateAndPublish(lastScannedRequests)
+        }
+    }
     
     @Published var isDemoMode: Bool = false {
         didSet {
@@ -59,6 +80,9 @@ class TelemetryManager: ObservableObject {
     
     @Published var lastRefreshed: Date = Date()
     @Published var isScanning: Bool = false
+    
+    // Keep requests in memory to support instant updates on limit settings modifications
+    private var lastScannedRequests: [ClaudeRequestEvent] = []
     
     // Cache to avoid re-parsing unchanged files
     private struct FileCacheInfo {
@@ -70,6 +94,16 @@ class TelemetryManager: ObservableObject {
     private let cacheLock = NSLock()
     
     init() {
+        // Load persisted limits or default values
+        let fLimit = UserDefaults.standard.integer(forKey: "fiveHourLimit")
+        self.fiveHourLimit = fLimit == 0 ? 45 : fLimit
+        
+        let wLimit = UserDefaults.standard.integer(forKey: "weeklyLimit")
+        self.weeklyLimit = wLimit == 0 ? 1000 : wLimit
+        
+        let wfLimit = UserDefaults.standard.integer(forKey: "weeklyFableLimit")
+        self.weeklyFableLimit = wfLimit == 0 ? 200 : wfLimit
+        
         refresh()
     }
     
@@ -144,6 +178,8 @@ class TelemetryManager: ObservableObject {
                 }
             }
             
+            // Cache requests list to memory
+            self.lastScannedRequests = allRequests
             self.aggregateAndPublish(allRequests)
         }
     }
@@ -159,7 +195,6 @@ class TelemetryManager: ObservableObject {
         
         let fiveHourRequestsList = requests.filter { $0.timestamp >= fiveHoursAgo }
         let weeklyRequestsList = requests.filter { $0.timestamp >= sevenDaysAgo }
-        let fableRequestsList = requests.filter { $0.model.lowercased().contains("fable") }
         
         // 2. Aggregate 5H metrics
         let f5RequestsCount = fiveHourRequestsList.count
@@ -171,12 +206,13 @@ class TelemetryManager: ObservableObject {
         let wInput = weeklyRequestsList.reduce(0, { $0 + $1.inputTokens })
         let wOutput = weeklyRequestsList.reduce(0, { $0 + $1.outputTokens })
         
-        // 4. Aggregate Fable metrics
-        let fabRequestsCount = fableRequestsList.count
-        let fabInput = fableRequestsList.reduce(0, { $0 + $1.inputTokens })
-        let fabOutput = fableRequestsList.reduce(0, { $0 + $1.outputTokens })
-        let fabRead = fableRequestsList.reduce(0, { $0 + $1.cacheReadTokens })
-        let fabWrite = fableRequestsList.reduce(0, { $0 + $1.cacheWriteTokens })
+        // 4. Aggregate Fable metrics (weekly window)
+        let weeklyFableRequestsList = weeklyRequestsList.filter { $0.model.lowercased().contains("fable") }
+        let fabRequestsCount = weeklyFableRequestsList.count
+        let fabInput = weeklyFableRequestsList.reduce(0, { $0 + $1.inputTokens })
+        let fabOutput = weeklyFableRequestsList.reduce(0, { $0 + $1.outputTokens })
+        let fabRead = weeklyFableRequestsList.reduce(0, { $0 + $1.cacheReadTokens })
+        let fabWrite = weeklyFableRequestsList.reduce(0, { $0 + $1.cacheWriteTokens })
         
         // 5. Build Model Usage Table
         var modelDict: [String: ModelUsage] = [:]
@@ -199,7 +235,7 @@ class TelemetryManager: ObservableObject {
         }
         let sortedModelUsage = modelDict.values.sorted(by: { $0.requestsCount > $1.requestsCount })
         
-        // 6. Group upcoming resets by minute and project
+        // 6. Group upcoming resets by minute and project (for 5H list)
         var groupedResets: [Date: [String: (requests: Int, tokens: Int)]] = [:]
         
         for req in fiveHourRequestsList {
@@ -237,6 +273,26 @@ class TelemetryManager: ObservableObject {
         // Sort chronologically (next reset first)
         resets.sort(by: { $0.timestamp < $1.timestamp })
         
+        // 7. Quota-Aware Block-Free Reset Date Calculation
+        var resolvedNextResetDate: Date? = nil
+        if f5RequestsCount > 0 {
+            // Sort requests by timestamp ascending (oldest first)
+            let sorted5H = fiveHourRequestsList.sorted(by: { $0.timestamp < $1.timestamp })
+            
+            if f5RequestsCount < self.fiveHourLimit {
+                // Under limit: oldest request expiration increases quota
+                resolvedNextResetDate = sorted5H.first?.timestamp.addingTimeInterval(5 * 3600)
+            } else {
+                // Over limit: must wait until enough requests expire to fall below limit
+                let indexNeeded = f5RequestsCount - self.fiveHourLimit
+                if indexNeeded < sorted5H.count {
+                    resolvedNextResetDate = sorted5H[indexNeeded].timestamp.addingTimeInterval(5 * 3600)
+                } else {
+                    resolvedNextResetDate = sorted5H.last?.timestamp.addingTimeInterval(5 * 3600)
+                }
+            }
+        }
+        
         // Publish to main thread
         DispatchQueue.main.async {
             self.fiveHourRequests = f5RequestsCount
@@ -255,6 +311,7 @@ class TelemetryManager: ObservableObject {
             
             self.modelUsageBreakdown = sortedModelUsage
             self.upcomingResets = resets
+            self.nextResetDate = resolvedNextResetDate
             
             self.lastRefreshed = Date()
             self.isScanning = false
@@ -424,6 +481,7 @@ class TelemetryManager: ObservableObject {
                 )
             ]
             
+            self.lastScannedRequests = mockRequests
             self.aggregateAndPublish(mockRequests)
         }
     }

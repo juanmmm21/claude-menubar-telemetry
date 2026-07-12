@@ -9,6 +9,9 @@ struct DashboardView: View {
     // State to trigger UI redraw on timer tick
     @State private var tick: Bool = false
     
+    // State to toggle visibility of limits configuration drawer
+    @State private var showSettings: Bool = false
+    
     var body: some View {
         VStack(spacing: 0) {
             // Header Bar
@@ -19,16 +22,25 @@ struct DashboardView: View {
             
             // Scrollable Content
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 20) {
                     
-                    // Main Grid Statistics (Subscription Windows)
-                    statsGridView
+                    // Pro Plan Usage Limits (matching screenshot style)
+                    proLimitsSectionView
+                    
+                    // Weekly Limits (matching screenshot style)
+                    weeklyLimitsSectionView
                     
                     // Model Usage Breakdown Table
                     modelBreakdownSectionView
                     
-                    // Upcoming Quota Resets (ASCII Timeline)
-                    resetsSectionView
+                    // Upcoming Resets Timeline
+                    upcomingResetsTimelineView
+                    
+                    Divider()
+                        .background(Theme.border)
+                    
+                    // Settings configuration Drawer
+                    settingsDrawerView
                 }
                 .padding(16)
             }
@@ -40,7 +52,7 @@ struct DashboardView: View {
             // Footer Control Bar
             footerView
         }
-        .frame(width: 380, height: 500)
+        .frame(width: 380, height: 520)
         .foregroundColor(Theme.textPrimary)
         .onReceive(timer) { _ in
             tick.toggle() // Forces redraw of countdown strings
@@ -83,85 +95,127 @@ struct DashboardView: View {
         .background(Theme.cardBackground)
     }
     
-    private var statsGridView: some View {
-        VStack(spacing: 1) { // 1px borders via spacing
-            HStack(spacing: 1) {
-                // 5-Hour rolling usage
-                statCard(
-                    title: "5H_ROLLING_USE",
-                    value: "\(manager.fiveHourRequests) reqs",
-                    subtitle: "Tokens: \(formatNumber(manager.fiveHourInputTokens + manager.fiveHourOutputTokens))",
-                    valueColor: Theme.success
-                )
-                
-                // Next reset countdown
-                statCard(
-                    title: "NEXT_RESET_IN",
-                    value: nextResetCountdownString(),
-                    subtitle: "Oldest request expiry",
-                    valueColor: manager.upcomingResets.isEmpty ? Theme.textSecondary : Theme.warning
-                )
-            }
-            
-            HStack(spacing: 1) {
-                // Weekly usage
-                statCard(
-                    title: "WEEKLY_USE_7D",
-                    value: "\(manager.weeklyRequests) reqs",
-                    subtitle: "Tokens: \(formatNumber(manager.weeklyInputTokens + manager.weeklyOutputTokens))",
-                    valueColor: Theme.accent
-                )
-                
-                // Claude Fable usage
-                statCard(
-                    title: "CLAUDE_FABLE_USE",
-                    value: "\(manager.fableRequests) reqs",
-                    subtitle: "Tokens: \(formatNumber(manager.fableInputTokens + manager.fableOutputTokens))",
-                    valueColor: Theme.textPrimary
-                )
-            }
-        }
-        .background(Theme.border)
-        .border(Theme.border, width: 1)
-    }
-    
-    private func statCard(title: String, value: String, subtitle: String, valueColor: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(Theme.monospaced(10, weight: .bold))
+    // 1. Límites de uso del plan Pro
+    private var proLimitsSectionView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Límites de uso del plan Pro")
+                .font(Theme.monospaced(12, weight: .bold))
                 .foregroundColor(Theme.textSecondary)
             
-            Text(value)
-                .font(Theme.monospaced(18, weight: .bold))
-                .foregroundColor(valueColor)
-                .minimumScaleFactor(0.7)
-                .lineLimit(1)
+            let pct = min(Double(manager.fiveHourRequests) / Double(manager.fiveHourLimit) * 100.0, 100.0)
+            let barColor = pct >= 90 ? Theme.error : (pct >= 70 ? Theme.warning : Theme.accent)
             
-            Text(subtitle)
-                .font(Theme.monospaced(9))
-                .foregroundColor(Theme.textMuted)
+            HStack(alignment: .center, spacing: 10) {
+                // Info Column (Left)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Sesión actual")
+                        .font(Theme.monospaced(11, weight: .bold))
+                        .foregroundColor(Theme.textPrimary)
+                    Text(sessionResetTimeString())
+                        .font(Theme.monospaced(9))
+                        .foregroundColor(Theme.textSecondary)
+                }
+                .frame(width: 135, alignment: .leading)
+                
+                // Progress Bar (Middle)
+                CustomProgressBar(value: pct, color: barColor)
+                    .frame(height: 6)
+                
+                // Percentage Text (Right)
+                Text("\(Int(pct))% usado")
+                    .font(Theme.monospaced(10, weight: .bold))
+                    .foregroundColor(Theme.textPrimary)
+                    .frame(width: 75, alignment: .trailing)
+            }
+            .padding(10)
+            .background(Theme.cardBackground)
+            .border(Theme.border, width: 1)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.cardBackground)
     }
     
+    // 2. Límites semanales
+    private var weeklyLimitsSectionView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Límites semanales")
+                .font(Theme.monospaced(12, weight: .bold))
+                .foregroundColor(Theme.textSecondary)
+            
+            VStack(spacing: 0) {
+                // Row 1: Todos los modelos
+                let pctAll = min(Double(manager.weeklyRequests) / Double(manager.weeklyLimit) * 100.0, 100.0)
+                let colorAll = pctAll >= 90 ? Theme.error : (pctAll >= 70 ? Theme.warning : Theme.accent)
+                
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Todos los modelos")
+                            .font(Theme.monospaced(11, weight: .bold))
+                            .foregroundColor(Theme.textPrimary)
+                        Text("Se restablece dom, 8:00")
+                            .font(Theme.monospaced(9))
+                            .foregroundColor(Theme.textSecondary)
+                    }
+                    .frame(width: 135, alignment: .leading)
+                    
+                    CustomProgressBar(value: pctAll, color: colorAll)
+                        .frame(height: 6)
+                    
+                    Text("\(Int(pctAll))% usado")
+                        .font(Theme.monospaced(10, weight: .bold))
+                        .foregroundColor(Theme.textPrimary)
+                        .frame(width: 75, alignment: .trailing)
+                }
+                .padding(10)
+                
+                Divider()
+                    .background(Theme.border)
+                
+                // Row 2: Fable
+                let pctFable = min(Double(manager.fableRequests) / Double(manager.weeklyFableLimit) * 100.0, 100.0)
+                let colorFable = pctFable >= 90 ? Theme.error : (pctFable >= 70 ? Theme.warning : Theme.accent)
+                
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Fable")
+                            .font(Theme.monospaced(11, weight: .bold))
+                            .foregroundColor(Theme.textPrimary)
+                        Text("Se restablece dom, 8:00")
+                            .font(Theme.monospaced(9))
+                            .foregroundColor(Theme.textSecondary)
+                    }
+                    .frame(width: 135, alignment: .leading)
+                    
+                    CustomProgressBar(value: pctFable, color: colorFable)
+                        .frame(height: 6)
+                    
+                    Text("\(Int(pctFable))% usado")
+                        .font(Theme.monospaced(10, weight: .bold))
+                        .foregroundColor(Theme.textPrimary)
+                        .frame(width: 75, alignment: .trailing)
+                }
+                .padding(10)
+            }
+            .background(Theme.cardBackground)
+            .border(Theme.border, width: 1)
+        }
+    }
+    
+    // 3. Model Breakdown Table
     private var modelBreakdownSectionView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("MODEL_USAGE_SUMMARY")
-                .font(Theme.monospaced(11, weight: .bold))
+            Text("Resumen de uso por modelo")
+                .font(Theme.monospaced(12, weight: .bold))
                 .foregroundColor(Theme.textSecondary)
             
             if manager.modelUsageBreakdown.isEmpty {
-                emptyStateView(message: "No model usage events found.")
+                emptyStateView(message: "Sin actividad en los logs.")
             } else {
                 VStack(spacing: 0) {
                     // Table Header
                     HStack {
-                        Text("MODEL")
-                            .frame(width: 140, alignment: .leading)
+                        Text("MODELO")
+                            .frame(width: 135, alignment: .leading)
                         Spacer()
-                        Text("REQS")
+                        Text("PETS")
                             .frame(width: 50, alignment: .trailing)
                         Spacer()
                         Text("TOKENS")
@@ -179,7 +233,7 @@ struct DashboardView: View {
                         
                         HStack {
                             Text(usage.modelName)
-                                .frame(width: 140, alignment: .leading)
+                                .frame(width: 135, alignment: .leading)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                             Spacer()
@@ -201,36 +255,33 @@ struct DashboardView: View {
         }
     }
     
-    private var resetsSectionView: some View {
+    // 4. Grouped Resets List
+    private var upcomingResetsTimelineView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("UPCOMING_QUOTA_RESETS (5H ROLL)")
-                .font(Theme.monospaced(11, weight: .bold))
+            Text("Línea de tiempo de restablecimientos (5H)")
+                .font(Theme.monospaced(12, weight: .bold))
                 .foregroundColor(Theme.textSecondary)
             
             if manager.upcomingResets.isEmpty {
-                emptyStateView(message: "No resets pending. Active quota is full.")
+                emptyStateView(message: "Cuota al 100% disponible. Sin bloqueos.")
             } else {
                 VStack(spacing: 0) {
-                    // Show next 4 resets
-                    ForEach(manager.upcomingResets.prefix(4)) { reset in
+                    ForEach(manager.upcomingResets.prefix(3)) { reset in
                         if reset != manager.upcomingResets.first {
                             Divider()
                                 .background(Theme.border)
                         }
                         
                         HStack(spacing: 0) {
-                            // Countdown Tag
                             Text("[ \(formatCountdown(to: reset.timestamp)) ]")
                                 .font(Theme.monospaced(10, weight: .bold))
                                 .foregroundColor(Theme.warning)
                                 .frame(width: 110, alignment: .leading)
                             
-                            // Arrow
                             Text("-> ")
                                 .font(Theme.monospaced(10))
                                 .foregroundColor(Theme.textMuted)
                             
-                            // Return Info
                             Text("+\(reset.requestsCount) req (\(reset.projectName))")
                                 .font(Theme.monospaced(10))
                                 .foregroundColor(Theme.textPrimary)
@@ -238,7 +289,6 @@ struct DashboardView: View {
                             
                             Spacer()
                             
-                            // Tokens that expire
                             Text("-\(formatNumber(reset.tokensReturned)) t")
                                 .font(Theme.monospaced(10))
                                 .foregroundColor(Theme.textSecondary)
@@ -246,12 +296,12 @@ struct DashboardView: View {
                         .padding(10)
                     }
                     
-                    if manager.upcomingResets.count > 4 {
+                    if manager.upcomingResets.count > 3 {
                         Divider()
                             .background(Theme.border)
                         HStack {
                             Spacer()
-                            Text("... and \(manager.upcomingResets.count - 4) more reset events")
+                            Text("... y \(manager.upcomingResets.count - 3) eventos de reinicio más")
                                 .font(Theme.monospaced(9))
                                 .foregroundColor(Theme.textMuted)
                                 .padding(.vertical, 4)
@@ -262,6 +312,72 @@ struct DashboardView: View {
                 }
                 .background(Theme.cardBackground)
                 .border(Theme.border, width: 1)
+            }
+        }
+    }
+    
+    // 5. Config Drawer at bottom
+    private var settingsDrawerView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showSettings.toggle()
+                }
+            }) {
+                HStack {
+                    Text(showSettings ? "[-] OCULTAR CONFIGURACIÓN" : "[+] AJUSTAR LÍMITES DE SUSCRIPCIÓN")
+                        .font(Theme.monospaced(10, weight: .bold))
+                        .foregroundColor(Theme.accent)
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            
+            if showSettings {
+                VStack(spacing: 10) {
+                    stepperRow(title: "Límite sesión 5H:", value: $manager.fiveHourLimit, step: 5, range: 10...200)
+                    stepperRow(title: "Límite semanal (Todos):", value: $manager.weeklyLimit, step: 100, range: 200...5000)
+                    stepperRow(title: "Límite semanal (Fable):", value: $manager.weeklyFableLimit, step: 20, range: 50...2000)
+                }
+                .padding(10)
+                .background(Theme.cardBackground)
+                .border(Theme.border, width: 1)
+            }
+        }
+    }
+    
+    private func stepperRow(title: String, value: Binding<Int>, step: Int, range: ClosedRange<Int>) -> some View {
+        HStack {
+            Text(title)
+                .font(Theme.monospaced(10))
+                .foregroundColor(Theme.textSecondary)
+            Spacer()
+            HStack(spacing: 8) {
+                Button("-") {
+                    if value.wrappedValue - step >= range.lowerBound {
+                        value.wrappedValue -= step
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(Theme.monospaced(12, weight: .bold))
+                .frame(width: 16, height: 16)
+                .background(Theme.border.opacity(0.5))
+                .cornerRadius(2)
+                
+                Text("\(value.wrappedValue)")
+                    .font(Theme.monospaced(10, weight: .bold))
+                    .frame(width: 40, alignment: .center)
+                
+                Button("+") {
+                    if value.wrappedValue + step <= range.upperBound {
+                        value.wrappedValue += step
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(Theme.monospaced(12, weight: .bold))
+                .frame(width: 16, height: 16)
+                .background(Theme.border.opacity(0.5))
+                .cornerRadius(2)
             }
         }
     }
@@ -281,7 +397,6 @@ struct DashboardView: View {
     
     private var footerView: some View {
         HStack {
-            // Mode switch toggle
             Toggle(isOn: $manager.isDemoMode) {
                 Text("DEMO")
                     .font(Theme.monospaced(10, weight: .bold))
@@ -291,7 +406,6 @@ struct DashboardView: View {
             
             Spacer()
             
-            // Last Refresh info / scan state
             if manager.isScanning {
                 ProgressView()
                     .scaleEffect(0.5)
@@ -313,7 +427,6 @@ struct DashboardView: View {
             
             Spacer()
             
-            // Quit Button
             Button(action: {
                 NSApplication.shared.terminate(nil)
             }) {
@@ -360,22 +473,44 @@ struct DashboardView: View {
         return String(format: "%02dh %02dm %02ds", hours, minutes, seconds)
     }
     
-    private func nextResetCountdownString() -> String {
-        guard let firstReset = manager.upcomingResets.first else {
-            return "FULL_QUOTA"
+    private func sessionResetTimeString() -> String {
+        guard let resetDate = manager.nextResetDate else {
+            return "Cuota completa"
         }
-        let diff = firstReset.timestamp.timeIntervalSince(Date())
+        let diff = resetDate.timeIntervalSince(Date())
         if diff <= 0 {
-            return "00h 00m 00s"
+            return "Restablecido"
         }
-        let hours = Int(diff) / 3600
-        let minutes = (Int(diff) % 3600) / 60
-        let seconds = Int(diff) % 60
-        
-        if hours > 0 {
-            return String(format: "%02dh %02dm %02ds", hours, minutes, seconds)
+        let mins = Int(ceil(diff / 60.0))
+        if mins >= 60 {
+            let hours = mins / 60
+            let remainingMins = mins % 60
+            return "Se restablece en \(hours) h \(remainingMins) min"
         } else {
-            return String(format: "%02dm %02ds", minutes, seconds)
+            return "Se restablece en \(mins) min"
         }
+    }
+}
+
+// Flat Horizontal Progress Bar
+struct CustomProgressBar: View {
+    let value: Double // 0.0 to 100.0
+    let color: Color
+    
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                // Background Track
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Theme.border.opacity(0.5))
+                    .frame(height: 6)
+                
+                // Active Track
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(color)
+                    .frame(width: geo.size.width * CGFloat(min(max(value, 0), 100) / 100.0), height: 6)
+            }
+        }
+        .frame(height: 6)
     }
 }
