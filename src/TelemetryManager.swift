@@ -22,14 +22,6 @@ struct ModelUsage: Identifiable, Equatable {
     var cacheWriteTokens: Int
 }
 
-struct QuotaReset: Identifiable, Equatable {
-    var id: String { "\(timestamp.timeIntervalSince1970)-\(projectName)-\(requestsCount)" }
-    let timestamp: Date          // The exact date when the quota returns (request date + 5 hours)
-    let projectName: String
-    let requestsCount: Int
-    let tokensReturned: Int
-}
-
 class TelemetryManager: ObservableObject {
     // 5-Hour Rolling Window Metrics
     @Published var fiveHourRequests: Int = 0
@@ -48,15 +40,22 @@ class TelemetryManager: ObservableObject {
     @Published var fableCacheReadTokens: Int = 0
     @Published var fableCacheWriteTokens: Int = 0
     
-    // Quota Resets & Model Usage Breakdown
-    @Published var upcomingResets: [QuotaReset] = []
+    // Model Usage Breakdown
     @Published var modelUsageBreakdown: [ModelUsage] = []
     @Published var nextResetDate: Date? = nil
     
-    // Server Rate Limit Block State (Parsed from timeline.jsonl)
+    // Server Rate Limit Block State (Parsed from timeline.jsonl, o del dato en vivo si está disponible)
     @Published var isCurrentlyBlocked: Bool = false
     @Published var blockMessage: String? = nil
-    
+
+    // Cuota real de la cuenta (Desktop + web + CLI), obtenida vía AccountUsageService.
+    // nil mientras no haya dato en vivo disponible: la UI debe caer de vuelta al
+    // cálculo local basado en logs (ver DashboardView).
+    @Published var liveQuota: UnifiedQuota? = nil
+    @Published var liveQuotaUnavailableReason: String? = nil
+    private let accountUsageService = AccountUsageService()
+    private var lastLiveQuotaAttempt: Date = .distantPast
+
     // Configurable User Limits (persisted in UserDefaults)
     @Published var fiveHourLimit: Int {
         didSet {
@@ -70,15 +69,12 @@ class TelemetryManager: ObservableObject {
             aggregateAndPublish(lastScannedRequests)
         }
     }
-    @Published var weeklyFableLimit: Int {
-        didSet {
-            UserDefaults.standard.set(weeklyFableLimit, forKey: "weeklyFableLimit")
-            aggregateAndPublish(lastScannedRequests)
-        }
-    }
-    
     @Published var isDemoMode: Bool = false {
         didSet {
+            // El dato en vivo es real de la cuenta; no tiene sentido mezclarlo con
+            // datos simulados de demo, así que se limpia al entrar/salir de demo.
+            liveQuota = nil
+            liveQuotaUnavailableReason = nil
             refresh()
         }
     }
@@ -105,31 +101,65 @@ class TelemetryManager: ObservableObject {
         
         let wLimit = UserDefaults.standard.integer(forKey: "weeklyLimit")
         self.weeklyLimit = wLimit == 0 ? 1000 : wLimit
-        
-        let wfLimit = UserDefaults.standard.integer(forKey: "weeklyFableLimit")
-        self.weeklyFableLimit = wfLimit == 0 ? 200 : wfLimit
-        
+
         refresh()
     }
     
     // Normalize model name for display
     func cleanModelName(_ model: String) -> String {
         let m = model.lowercased()
-        if m.contains("fable") {
+        if m == "unknown" {
+            return "Desconocido"
+        } else if m == "<synthetic>" {
+            return "Interno (síntesis)"
+        } else if m.contains("fable") {
             return "Claude Fable 5"
-        } else if m.contains("sonnet-20241022") || m.contains("sonnet-latest") || (m.contains("sonnet") && m.contains("3-5")) {
-            return "Claude 3.5 Sonnet"
-        } else if m.contains("haiku-20241022") || (m.contains("haiku") && m.contains("3-5")) {
-            return "Claude 3.5 Haiku"
         } else if m.contains("opus") {
-            return "Claude 3 Opus"
+            let version = extractVersion(from: m, family: "opus")
+            return version.map { "Claude Opus \($0)" } ?? "Claude Opus"
         } else if m.contains("haiku") {
-            return "Claude 3 Haiku"
+            let version = extractVersion(from: m, family: "haiku")
+            return version.map { "Claude Haiku \($0)" } ?? "Claude Haiku"
         } else if m.contains("sonnet") {
-            return "Claude 3 Sonnet"
+            let version = extractVersion(from: m, family: "sonnet")
+            return version.map { "Claude Sonnet \($0)" } ?? "Claude Sonnet"
         } else {
             return model // Return raw model identifier
         }
+    }
+
+    // Extrae el número de versión adyacente al nombre de familia (p.ej. "5" en
+    // "claude-sonnet-5", "4.5" en "claude-haiku-4-5-20251001"). Soporta tanto el
+    // esquema actual "familia-version" como el legado "version-familia"
+    // (claude-3-5-sonnet-20241022), y descarta sufijos de fecha (8 dígitos) para
+    // no confundirlos con la versión. Los ids de modelo cambian con cada
+    // generación (Claude 3 -> 3.5 -> 5), así que hacer esto genérico evita tener
+    // que volver a tocar este fichero cada vez que sale un modelo nuevo.
+    private func extractVersion(from model: String, family: String) -> String? {
+        let parts = model.split(separator: "-").map(String.init)
+        guard let familyIndex = parts.firstIndex(where: { $0.contains(family) }) else { return nil }
+
+        func isVersionComponent(_ s: String) -> Bool {
+            !s.isEmpty && s.count < 8 && s.allSatisfy { $0.isNumber }
+        }
+
+        var trailing: [String] = []
+        var idx = familyIndex + 1
+        while idx < parts.count, isVersionComponent(parts[idx]) {
+            trailing.append(parts[idx])
+            idx += 1
+        }
+        if !trailing.isEmpty {
+            return trailing.joined(separator: ".")
+        }
+
+        var leading: [String] = []
+        idx = familyIndex - 1
+        while idx >= 0, isVersionComponent(parts[idx]) {
+            leading.insert(parts[idx], at: 0)
+            idx -= 1
+        }
+        return leading.isEmpty ? nil : leading.joined(separator: ".")
     }
     
     // Trigger telemetry refresh
@@ -149,7 +179,8 @@ class TelemetryManager: ObservableObject {
         
         guard !isScanning else { return }
         isScanning = true
-        
+        refreshLiveQuotaIfDue()
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
@@ -186,7 +217,45 @@ class TelemetryManager: ObservableObject {
             self.aggregateAndPublish(allRequests)
         }
     }
-    
+
+    // Pide el dato real de cuota a AccountUsageService, con un intervalo mínimo
+    // entre intentos: cada llamada usa una petición real a la API (coste de
+    // cuota despreciable pero no nulo), así que no tiene sentido dispararla en
+    // cada refresh() si el usuario abre y cierra el popover repetidamente.
+    private let minimumLiveQuotaInterval: TimeInterval = 60
+
+    private func refreshLiveQuotaIfDue() {
+        guard Date().timeIntervalSince(lastLiveQuotaAttempt) >= minimumLiveQuotaInterval else { return }
+        lastLiveQuotaAttempt = Date()
+
+        accountUsageService.fetchLiveQuota { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let quota):
+                    self.liveQuota = quota
+                    self.liveQuotaUnavailableReason = nil
+                    self.isCurrentlyBlocked = quota.isRateLimited
+                    self.nextResetDate = quota.fiveHourReset
+                case .failure(let error):
+                    self.liveQuota = nil
+                    switch error {
+                    case .notLoggedIn:
+                        self.liveQuotaUnavailableReason = "Sin sesión de Claude Code en este Mac"
+                    case .keychainAccessDenied:
+                        self.liveQuotaUnavailableReason = "Permiso de Keychain denegado — autorízalo en el aviso del sistema"
+                    case .sessionExpired:
+                        self.liveQuotaUnavailableReason = "Sesión de Claude Code caducada — ábrelo para refrescarla"
+                    case .network:
+                        self.liveQuotaUnavailableReason = "Sin conexión con Anthropic"
+                    case .unavailable:
+                        self.liveQuotaUnavailableReason = "Dato en vivo no disponible ahora mismo"
+                    }
+                }
+            }
+        }
+    }
+
     // Checks if the user is currently blocked by parsing timeline.jsonl files
     private func checkBlockStateFromTimeline() -> (isBlocked: Bool, resetDate: Date?, message: String?) {
         let homeDir = FileManager.default.homeDirectoryForCurrentUser
@@ -298,7 +367,10 @@ class TelemetryManager: ObservableObject {
     // Updates block status and triggers UI redraw if needed
     func updateBlockStateIfNeeded() {
         if isDemoMode { return }
-        
+        // Con dato en vivo, el estado de bloqueo ya lo marca refreshLiveQuotaIfDue()
+        // con la señal real de la cuenta; no lo pisamos con el parseo de timeline.jsonl.
+        if liveQuota != nil { return }
+
         let blockState = checkBlockStateFromTimeline()
         
         if blockState.isBlocked != self.isCurrentlyBlocked || blockState.resetDate != self.nextResetDate {
@@ -318,8 +390,7 @@ class TelemetryManager: ObservableObject {
     // Aggregates raw request events and publishes to main thread properties
     private func aggregateAndPublish(_ requests: [ClaudeRequestEvent]) {
         let now = Date()
-        let calendar = Calendar.current
-        
+
         // 1. Split user prompts vs assistant usage logs
         let prompts = requests.filter { $0.isUserPrompt }
         let usages = requests.filter { !$0.isUserPrompt }
@@ -386,53 +457,8 @@ class TelemetryManager: ObservableObject {
             modelDict[cleanName] = usage
         }
         let sortedModelUsage = modelDict.values.sorted(by: { $0.requestsCount > $1.requestsCount })
-        
-        // 7. Group upcoming resets by minute and project (for 5H list based on prompts)
-        var groupedResets: [Date: [String: (requests: Int, tokens: Int)]] = [:]
-        
-        for req in fiveHourPrompts {
-            let resetDate = req.timestamp.addingTimeInterval(5 * 3600)
-            
-            // Truncate to the nearest minute to group nearby requests
-            let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: resetDate)
-            let minuteDate = calendar.date(from: components) ?? resetDate
-            
-            if groupedResets[minuteDate] == nil {
-                groupedResets[minuteDate] = [:]
-            }
-            
-            // Find tokens close to this prompt time to estimate tokens freed up
-            let promptRangeStart = req.timestamp.addingTimeInterval(-30)
-            let promptRangeEnd = req.timestamp.addingTimeInterval(30)
-            let associatedTokens = fiveHourUsages.filter { 
-                $0.timestamp >= promptRangeStart && $0.timestamp <= promptRangeEnd 
-            }.reduce(0, { $0 + $1.inputTokens + $1.outputTokens })
-            
-            let current = groupedResets[minuteDate]?[req.projectName] ?? (requests: 0, tokens: 0)
-            groupedResets[minuteDate]?[req.projectName] = (
-                requests: current.requests + 1,
-                tokens: current.tokens + associatedTokens
-            )
-        }
-        
-        var resets: [QuotaReset] = []
-        for (date, projectMap) in groupedResets {
-            if date > now { // Future resets only
-                for (project, info) in projectMap {
-                    resets.append(QuotaReset(
-                        timestamp: date,
-                        projectName: project,
-                        requestsCount: info.requests,
-                        tokensReturned: info.tokens
-                    ))
-                }
-            }
-        }
-        
-        // Sort chronologically (next reset first)
-        resets.sort(by: { $0.timestamp < $1.timestamp })
-        
-        // 8. Quota-Aware Block-Free Reset Date Calculation based on user prompts
+
+        // 7. Quota-Aware Block-Free Reset Date Calculation based on user prompts
         var resolvedNextResetDate: Date? = nil
         if f5RequestsCount > 0 {
             let sorted5H = fiveHourPrompts.sorted(by: { $0.timestamp < $1.timestamp })
@@ -449,22 +475,28 @@ class TelemetryManager: ObservableObject {
             }
         }
         
-        // 9. Check real-time rate limit timeline block
+        // 8. Check real-time rate limit timeline block
         let blockState = checkBlockStateFromTimeline()
         
         // Publish to main thread
         DispatchQueue.main.async {
-            self.isCurrentlyBlocked = blockState.isBlocked
-            self.blockMessage = blockState.message
-            
-            if blockState.isBlocked, let rDate = blockState.resetDate {
-                self.fiveHourRequests = self.fiveHourLimit
-                self.nextResetDate = rDate
+            // Si ya hay dato en vivo de la cuenta, es más fiable que este parseo
+            // local de timeline.jsonl: no lo pisamos con la estimación local.
+            if self.liveQuota == nil {
+                self.isCurrentlyBlocked = blockState.isBlocked
+                self.blockMessage = blockState.message
+
+                if blockState.isBlocked, let rDate = blockState.resetDate {
+                    self.fiveHourRequests = self.fiveHourLimit
+                    self.nextResetDate = rDate
+                } else {
+                    self.fiveHourRequests = f5RequestsCount
+                    self.nextResetDate = resolvedNextResetDate
+                }
             } else {
                 self.fiveHourRequests = f5RequestsCount
-                self.nextResetDate = resolvedNextResetDate
             }
-            
+
             self.fiveHourInputTokens = f5Input
             self.fiveHourOutputTokens = f5Output
             
@@ -479,8 +511,7 @@ class TelemetryManager: ObservableObject {
             self.fableCacheWriteTokens = fabWrite
             
             self.modelUsageBreakdown = sortedModelUsage
-            self.upcomingResets = resets
-            
+
             self.lastRefreshed = Date()
             self.isScanning = false
         }
@@ -514,7 +545,10 @@ class TelemetryManager: ObservableObject {
         var requests: [ClaudeRequestEvent] = []
         
         // Pass 1: Find model used in this session file
-        var detectedModel = "claude-3-5-sonnet"
+        // "unknown" en vez de un id de modelo real fijo: si no se detecta ninguno,
+        // cleanModelName lo etiqueta explícitamente como "Desconocido" en vez de
+        // mezclarlo silenciosamente con las cifras de un modelo real.
+        var detectedModel = "unknown"
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { continue }
@@ -541,9 +575,16 @@ class TelemetryManager: ObservableObject {
                 if type == "user",
                    let message = json["message"] as? [String: Any],
                    let content = message["content"] {
-                    
-                    // If content is a String, it's a manual text prompt written by the user
-                    if content is String {
+
+                    // Content is String both for prompts realmente escritos por el usuario y para
+                    // eventos inyectados por el sistema (task-notifications de jobs en background,
+                    // resúmenes de auto-compact, reinyecciones "isMeta"). Solo "origin.kind == human"
+                    // distingue de forma fiable un prompt humano real; sin este filtro el contador
+                    // semanal llegó a inflarse ~30% con eventos que no consume el propio usuario.
+                    let origin = json["origin"] as? [String: Any]
+                    let isHumanPrompt = (origin?["kind"] as? String) == "human"
+
+                    if content is String, isHumanPrompt {
                         let req = ClaudeRequestEvent(
                             timestamp: eventDate,
                             model: detectedModel,

@@ -44,10 +44,12 @@ swiftc -o "$MACOS_DIR/$APP_NAME" \
     src/AppDelegate.swift \
     src/DashboardView.swift \
     src/TelemetryManager.swift \
+    src/AccountUsageService.swift \
     src/Theme.swift \
     -framework Cocoa \
     -framework SwiftUI \
     -framework Combine \
+    -framework Security \
     -O
 
 echo "=== Generating Info.plist ==="
