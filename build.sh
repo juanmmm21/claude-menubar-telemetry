@@ -45,6 +45,7 @@ swiftc -o "$MACOS_DIR/$APP_NAME" \
     src/DashboardView.swift \
     src/TelemetryManager.swift \
     src/AccountUsageService.swift \
+    src/ClaudeSessionStore.swift \
     src/LaunchAtLoginService.swift \
     src/Theme.swift \
     -framework Cocoa \
