@@ -48,11 +48,19 @@ class TelemetryManager: ObservableObject {
     @Published var isCurrentlyBlocked: Bool = false
     @Published var blockMessage: String? = nil
 
-    // Cuota real de la cuenta (Desktop + web + CLI), obtenida vía AccountUsageService.
-    // nil mientras no haya dato en vivo disponible: la UI debe caer de vuelta al
-    // cálculo local basado en logs (ver DashboardView).
-    @Published var liveQuota: UnifiedQuota? = nil
+    // Uso real de la cuenta (Desktop + web + CLI + móvil) y estado de los
+    // créditos de uso, obtenidos vía AccountUsageService. nil mientras no haya
+    // dato en vivo disponible: la UI cae de vuelta al cálculo local basado en
+    // logs (ver DashboardView).
+    @Published var accountUsage: AccountUsage? = nil
     @Published var liveQuotaUnavailableReason: String? = nil
+
+    // El llavero necesita una autorización del usuario que Claude Code invalida
+    // cada vez que renueva su token. Cuando toca volver a pedirla, la app no
+    // abre el diálogo por su cuenta: enciende esta bandera y espera a que el
+    // usuario pulse el botón del panel.
+    @Published var needsKeychainAuthorization: Bool = false
+
     private let accountUsageService = AccountUsageService()
     private var lastLiveQuotaAttempt: Date = .distantPast
 
@@ -218,48 +226,50 @@ class TelemetryManager: ObservableObject {
         }
     }
 
-    // Pide el dato real de cuota a AccountUsageService, con un intervalo mínimo
-    // entre intentos: cada llamada usa una petición real a la API (coste de
-    // cuota despreciable pero no nulo), así que no tiene sentido dispararla en
-    // cada refresh() si el usuario abre y cierra el popover repetidamente.
+    // Intervalo mínimo entre consultas al endpoint de uso. La llamada es de solo
+    // lectura y no gasta cuota, pero tampoco tiene sentido repetirla si el
+    // usuario abre y cierra el popover varias veces seguidas.
     private let minimumLiveQuotaInterval: TimeInterval = 60
 
     private func refreshLiveQuotaIfDue() {
         guard Date().timeIntervalSince(lastLiveQuotaAttempt) >= minimumLiveQuotaInterval else { return }
+        fetchAccountUsage(allowingKeychainPrompt: false)
+    }
+
+    // Lo llama el botón del panel: es el único camino por el que la app abre el
+    // diálogo de permiso del llavero, para que nunca aparezca sin que el usuario
+    // lo haya pedido.
+    func authorizeKeychainAccess() {
+        fetchAccountUsage(allowingKeychainPrompt: true)
+    }
+
+    private func fetchAccountUsage(allowingKeychainPrompt: Bool) {
         lastLiveQuotaAttempt = Date()
 
-        accountUsageService.fetchLiveQuota { [weak self] result in
+        accountUsageService.fetchAccountUsage(allowingKeychainPrompt: allowingKeychainPrompt) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 switch result {
-                case .success(let quota):
-                    self.liveQuota = quota
+                case .success(let usage):
+                    self.accountUsage = usage
                     self.liveQuotaUnavailableReason = nil
-                    // isRateLimited puede activarse antes del 100% real de utilización
-                    self.isCurrentlyBlocked = quota.isRateLimited && quota.fiveHourUtilization >= 0.99
-                    // Con uso insignificante, el reset de la API no es informativo
-                    // (p.ej. muestra "6 min" aunque la ventana esté prácticamente vacía).
-                    if quota.fiveHourUtilization >= 0.01 || self.isCurrentlyBlocked {
-                        self.nextResetDate = quota.fiveHourReset
+                    self.needsKeychainAuthorization = false
+
+                    let sessionPercent = usage.fiveHour?.utilizationPercent ?? 0
+                    self.isCurrentlyBlocked = sessionPercent >= 99.0
+                    // Con uso insignificante el reset no es informativo (marca
+                    // "6 min" aunque la ventana esté prácticamente vacía).
+                    if sessionPercent >= 1.0 {
+                        self.nextResetDate = usage.fiveHour?.resetsAt
                     } else {
                         self.nextResetDate = nil
                     }
                 case .failure(let error):
-                    self.liveQuota = nil
+                    self.accountUsage = nil
                     self.nextResetDate = nil
+                    self.needsKeychainAuthorization = (error.isKeychainAuthorizationIssue)
+                    self.liveQuotaUnavailableReason = error.userMessage
                     self.aggregateAndPublish(self.lastScannedRequests)
-                    switch error {
-                    case .notLoggedIn:
-                        self.liveQuotaUnavailableReason = "Sin sesión de Claude Code en este Mac"
-                    case .keychainAccessDenied:
-                        self.liveQuotaUnavailableReason = "Permiso de Keychain denegado — autorízalo en el aviso del sistema"
-                    case .sessionExpired:
-                        self.liveQuotaUnavailableReason = "Sesión de Claude Code caducada — ábrelo para refrescarla"
-                    case .network:
-                        self.liveQuotaUnavailableReason = "Sin conexión con Anthropic"
-                    case .unavailable:
-                        self.liveQuotaUnavailableReason = "Dato en vivo no disponible ahora mismo"
-                    }
                 }
             }
         }
@@ -377,7 +387,7 @@ class TelemetryManager: ObservableObject {
     func updateBlockStateIfNeeded() {
         // Con dato en vivo, el estado de bloqueo ya lo marca refreshLiveQuotaIfDue()
         // con la señal real de la cuenta; no lo pisamos con el parseo de timeline.jsonl.
-        if liveQuota != nil { return }
+        if accountUsage != nil { return }
 
         let blockState = checkBlockStateFromTimeline()
         
@@ -490,7 +500,7 @@ class TelemetryManager: ObservableObject {
         DispatchQueue.main.async {
             // Si ya hay dato en vivo de la cuenta, es más fiable que este parseo
             // local de timeline.jsonl: no lo pisamos con la estimación local.
-            if self.liveQuota == nil {
+            if self.accountUsage == nil {
                 self.isCurrentlyBlocked = blockState.isBlocked
                 self.blockMessage = blockState.message
 

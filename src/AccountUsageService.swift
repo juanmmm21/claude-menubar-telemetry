@@ -1,154 +1,392 @@
 import Foundation
-import Security
 
-// Cuota unificada real de la cuenta (Desktop + web + CLI + móvil), tal y como la
-// calcula el propio backend de Anthropic — no una estimación local.
-struct UnifiedQuota: Equatable {
-    let fiveHourUtilization: Double   // 0.0 - 1.0
-    let fiveHourReset: Date
-    let sevenDayUtilization: Double   // 0.0 - 1.0
-    let sevenDayReset: Date
-    let isRateLimited: Bool
+// Una ventana de límite tal y como la sirve /api/oauth/usage: el porcentaje ya
+// viene en escala 0-100, no como fracción.
+struct UsageWindow: Equatable {
+    let utilizationPercent: Double
+    let resetsAt: Date?
+}
+
+// Ventana semanal acotada a un modelo concreto (Fable, Opus...). Anthropic las
+// envía en el array `limits` con kind == "weekly_scoped".
+struct ScopedUsageWindow: Equatable, Identifiable {
+    let displayName: String
+    let window: UsageWindow
+    var id: String { displayName }
+}
+
+// Créditos de uso ("usage credits"): el saldo con el que se paga el consumo que
+// ya no cabe en la cuota del plan — que es como se factura Fable desde que dejó
+// de ir contra el límite semanal.
+//
+// Los importes vienen en unidades menores de la divisa (céntimos para EUR/USD).
+// monthlyLimitMinorUnits == nil significa "sin tope mensual".
+struct CreditStatus: Equatable {
+    let isEnabled: Bool
+    let monthlyLimitMinorUnits: Int?
+    let usedMinorUnits: Int?
+    let utilizationPercent: Double?
+    let currencyCode: String
+    let disabledReason: String?
+
+    var remainingMinorUnits: Int? {
+        guard let limit = monthlyLimitMinorUnits else { return nil }
+        return max(limit - (usedMinorUnits ?? 0), 0)
+    }
+}
+
+// Saldo prepago de la organización. Solo existe en cuentas que compran bolsas de
+// crédito por adelantado; en una cuenta personal de suscripción el endpoint
+// responde que no aplica y este dato queda a nil.
+struct PrepaidBalance: Equatable {
+    let balanceMinorUnits: Int
+    let currencyCode: String
+}
+
+struct AccountUsage: Equatable {
+    let fiveHour: UsageWindow?
+    let sevenDay: UsageWindow?
+    let sevenDayOpus: UsageWindow?
+    let sevenDaySonnet: UsageWindow?
+    let modelWindows: [ScopedUsageWindow]
+    let credits: CreditStatus?
+    let prepaid: PrepaidBalance?
+
+    // Ventana semanal del modelo cuyo nombre coincide con el buscado, si el
+    // servidor la está publicando.
+    func modelWindow(matching needle: String) -> ScopedUsageWindow? {
+        let needle = needle.lowercased()
+        return modelWindows.first { $0.displayName.lowercased().contains(needle) }
+    }
 }
 
 enum LiveQuotaError: Error {
-    case notLoggedIn        // No hay item de credenciales de Claude Code en el Keychain
-    case keychainAccessDenied // El item existe pero macOS denegó el acceso (permiso no concedido)
-    case sessionExpired     // El access token guardado ya caducó
+    case notLoggedIn            // No hay sesión de Claude Code en este Mac
+    case authorizationRequired  // Falta el permiso del llavero; el usuario debe concederlo desde el panel
+    case keychainAccessDenied   // El usuario denegó el diálogo del sistema
+    case sessionExpired         // El token guardado caducó: solo Claude Code puede renovarlo
+    case unauthorized           // La API rechazó el token
     case network(String)
-    case unavailable        // Respuesta recibida pero sin las cabeceras esperadas
+    case unavailable            // Respuesta recibida pero ilegible
 }
 
-// Lee la cuota de uso real de la cuenta reutilizando la sesión OAuth que Claude
-// Code ya tiene guardada localmente (Keychain, item "Claude Code-credentials").
-// No se escribe nada en ese item ni se intenta refrescar el token: si ha
-// caducado, se informa al usuario en vez de intentar un refresh no documentado
-// que podría interferir con la sesión real del CLI.
-//
-// Cómo se obtiene el dato: una llamada mínima (max_tokens: 1, coste de cuota
-// despreciable) a /v1/messages con ese mismo token. La respuesta de Anthropic
-// incluye cabeceras `anthropic-ratelimit-unified-*` con la utilización real de
-// las ventanas de 5 horas y 7 días de la cuenta. Esas cabeceras no son API
-// pública documentada, así que si Anthropic las renombra o las retira esta
-// llamada dejará de aportar dato en vivo y la app debe caer de vuelta al
-// cálculo local basado en logs (ver TelemetryManager).
-final class AccountUsageService {
-    private static let keychainService = "Claude Code-credentials"
-
-    // Modelo usado solo para la llamada de sondeo (max_tokens: 1). Si Anthropic
-    // retira este id en el futuro, actualízalo aquí; el resto de la lógica no
-    // depende de qué modelo se use.
-    private static let probeModel = "claude-haiku-4-5-20251001"
-
-    private let session: URLSession
-
-    init(session: URLSession = URLSession(configuration: .ephemeral)) {
-        self.session = session
+extension LiveQuotaError {
+    // Distingue los fallos que el usuario puede resolver con un clic (conceder
+    // el permiso del llavero) de los que no dependen de él.
+    var isKeychainAuthorizationIssue: Bool {
+        switch self {
+        case .authorizationRequired, .keychainAccessDenied, .unauthorized: return true
+        default: return false
+        }
     }
 
-    func fetchLiveQuota(completion: @escaping (Result<UnifiedQuota, LiveQuotaError>) -> Void) {
-        let oauth: CredentialsFile.OAuth
+    var userMessage: String {
+        switch self {
+        case .notLoggedIn:
+            return "Sin sesión de Claude Code en este Mac"
+        case .authorizationRequired:
+            return "Falta el permiso del llavero"
+        case .keychainAccessDenied:
+            return "Permiso del llavero denegado"
+        case .sessionExpired:
+            return "Sesión de Claude Code caducada — ábrelo para renovarla"
+        case .unauthorized:
+            return "Anthropic rechazó el token — vuelve a autorizar"
+        case .network(let detail):
+            return "Sin conexión con Anthropic (\(detail))"
+        case .unavailable:
+            return "Dato en vivo no disponible ahora mismo"
+        }
+    }
+}
+
+// Lee el uso real de la cuenta reutilizando la sesión OAuth que Claude Code ya
+// tiene guardada en este Mac.
+//
+// La fuente es GET /api/oauth/usage, el mismo endpoint que alimenta al comando
+// /usage del CLI: no consume cuota (antes esta app mandaba un /v1/messages de
+// un token solo para leer las cabeceras de rate limit) y trae bastante más
+// dato — ventanas por modelo y estado de los créditos de uso. No es API pública
+// documentada, así que si Anthropic la cambia la app se queda sin dato en vivo y
+// cae de vuelta a la estimación local por logs (ver TelemetryManager).
+final class AccountUsageService {
+    private static let host = "https://api.anthropic.com"
+
+    private let session: URLSession
+    private let store: ClaudeSessionStore
+
+    init(session: URLSession = URLSession(configuration: .ephemeral),
+         store: ClaudeSessionStore = ClaudeSessionStore()) {
+        self.session = session
+        self.store = store
+    }
+
+    // `allowingKeychainPrompt: false` en los sondeos periódicos, para que el
+    // diálogo del llavero no interrumpa al usuario por sorpresa.
+    func fetchAccountUsage(allowingKeychainPrompt: Bool,
+                           completion: @escaping (Result<AccountUsage, LiveQuotaError>) -> Void) {
+        let claudeSession: ClaudeSession
         do {
-            oauth = try Self.readCredentials()
-        } catch let error as LiveQuotaError {
-            completion(.failure(error))
+            claudeSession = try store.session(allowingPrompt: allowingKeychainPrompt)
+        } catch let error as SessionError {
+            completion(.failure(Self.map(error)))
             return
         } catch {
             completion(.failure(.unavailable))
             return
         }
 
-        let expiry = Date(timeIntervalSince1970: oauth.expiresAt / 1000)
-        guard expiry > Date() else {
-            completion(.failure(.sessionExpired))
-            return
-        }
+        let request = authorizedRequest(path: "/api/oauth/usage", token: claudeSession.accessToken)
 
-        var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 10
-        request.setValue("Bearer \(oauth.accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "model": Self.probeModel,
-            "max_tokens": 1,
-            "messages": [["role": "user", "content": "hi"]]
-        ])
+        session.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
 
-        session.dataTask(with: request) { _, response, error in
             if let error = error {
                 completion(.failure(.network(error.localizedDescription)))
                 return
             }
-            guard let http = response as? HTTPURLResponse, let quota = Self.parseQuota(from: http) else {
+            guard let http = response as? HTTPURLResponse else {
                 completion(.failure(.unavailable))
                 return
             }
-            completion(.success(quota))
+            if http.statusCode == 401 || http.statusCode == 403 {
+                // El token cacheado ya no vale: el siguiente intento debe volver
+                // al llavero de Claude Code a por uno nuevo.
+                self.store.invalidateCachedSession()
+                completion(.failure(.unauthorized))
+                return
+            }
+            guard http.statusCode == 200,
+                  let data = data,
+                  let payload = try? JSONDecoder().decode(UsagePayload.self, from: data) else {
+                completion(.failure(.unavailable))
+                return
+            }
+
+            let usage = payload.toAccountUsage(prepaid: nil)
+
+            // El saldo prepago es un extra: si no aplica a esta cuenta, se
+            // entrega el resto del dato igualmente.
+            guard let orgUUID = LocalAccountInfo.organizationUUID() else {
+                completion(.success(usage))
+                return
+            }
+            self.fetchPrepaidBalance(orgUUID: orgUUID, token: claudeSession.accessToken) { prepaid in
+                completion(.success(payload.toAccountUsage(prepaid: prepaid)))
+            }
         }.resume()
     }
 
-    private static func parseQuota(from response: HTTPURLResponse) -> UnifiedQuota? {
-        func header(_ name: String) -> String? {
-            response.value(forHTTPHeaderField: name)
+    private func fetchPrepaidBalance(orgUUID: String,
+                                     token: String,
+                                     completion: @escaping (PrepaidBalance?) -> Void) {
+        var request = authorizedRequest(
+            path: "/api/oauth/organizations/\(orgUUID)/prepaid/credits",
+            token: token
+        )
+        request.setValue(orgUUID, forHTTPHeaderField: "x-organization-uuid")
+
+        session.dataTask(with: request) { data, response, _ in
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let data = data,
+                  let payload = try? JSONDecoder().decode(PrepaidPayload.self, from: data),
+                  let cents = payload.amount ?? payload.balanceCents else {
+                completion(nil)
+                return
+            }
+            completion(PrepaidBalance(
+                balanceMinorUnits: cents,
+                currencyCode: payload.currency?.uppercased() ?? "USD"
+            ))
+        }.resume()
+    }
+
+    private func authorizedRequest(path: String, token: String) -> URLRequest {
+        var request = URLRequest(url: URL(string: Self.host + path)!)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private static func map(_ error: SessionError) -> LiveQuotaError {
+        switch error {
+        case .notLoggedIn: return .notLoggedIn
+        case .authorizationRequired: return .authorizationRequired
+        case .accessDenied: return .keychainAccessDenied
+        case .expired: return .sessionExpired
+        case .malformed: return .unavailable
         }
-        guard let fiveHUtil = header("anthropic-ratelimit-unified-5h-utilization").flatMap(Double.init),
-              let fiveHReset = header("anthropic-ratelimit-unified-5h-reset").flatMap(Double.init),
-              let sevenDUtil = header("anthropic-ratelimit-unified-7d-utilization").flatMap(Double.init),
-              let sevenDReset = header("anthropic-ratelimit-unified-7d-reset").flatMap(Double.init) else {
-            return nil
+    }
+}
+
+// MARK: - Respuesta de /api/oauth/usage
+
+private struct UsagePayload: Decodable {
+    struct Window: Decodable {
+        let utilization: Double?
+        let resetsAt: FlexibleDate?
+
+        enum CodingKeys: String, CodingKey {
+            case utilization
+            case resetsAt = "resets_at"
         }
-        let status = header("anthropic-ratelimit-unified-status") ?? "allowed"
-        return UnifiedQuota(
-            fiveHourUtilization: normalizeUtilization(fiveHUtil),
-            fiveHourReset: Date(timeIntervalSince1970: fiveHReset),
-            sevenDayUtilization: normalizeUtilization(sevenDUtil),
-            sevenDayReset: Date(timeIntervalSince1970: sevenDReset),
-            isRateLimited: status != "allowed"
+
+        var asUsageWindow: UsageWindow? {
+            guard let utilization = utilization else { return nil }
+            return UsageWindow(utilizationPercent: utilization, resetsAt: resetsAt?.date)
+        }
+    }
+
+    struct ExtraUsage: Decodable {
+        let isEnabled: Bool?
+        let monthlyLimit: Double?
+        let usedCredits: Double?
+        let utilization: Double?
+        let currency: String?
+        let disabledReason: String?
+
+        enum CodingKeys: String, CodingKey {
+            case isEnabled = "is_enabled"
+            case monthlyLimit = "monthly_limit"
+            case usedCredits = "used_credits"
+            case utilization
+            case currency
+            case disabledReason = "disabled_reason"
+        }
+    }
+
+    struct Limit: Decodable {
+        struct Scope: Decodable {
+            struct Named: Decodable { let displayName: String?
+
+                enum CodingKeys: String, CodingKey { case displayName = "display_name" }
+            }
+            let model: Named?
+        }
+
+        let kind: String?
+        let percent: Double?
+        let resetsAt: FlexibleDate?
+        let scope: Scope?
+
+        enum CodingKeys: String, CodingKey {
+            case kind, percent, scope
+            case resetsAt = "resets_at"
+        }
+    }
+
+    let fiveHour: Window?
+    let sevenDay: Window?
+    let sevenDayOpus: Window?
+    let sevenDaySonnet: Window?
+    let extraUsage: ExtraUsage?
+    let limits: [Limit]?
+
+    enum CodingKeys: String, CodingKey {
+        case fiveHour = "five_hour"
+        case sevenDay = "seven_day"
+        case sevenDayOpus = "seven_day_opus"
+        case sevenDaySonnet = "seven_day_sonnet"
+        case extraUsage = "extra_usage"
+        case limits
+    }
+
+    func toAccountUsage(prepaid: PrepaidBalance?) -> AccountUsage {
+        let currency = extraUsage?.currency?.uppercased() ?? prepaid?.currencyCode ?? "USD"
+
+        let credits = extraUsage.map { extra in
+            CreditStatus(
+                isEnabled: extra.isEnabled ?? false,
+                monthlyLimitMinorUnits: extra.monthlyLimit.map { Int($0.rounded()) },
+                usedMinorUnits: extra.usedCredits.map { Int($0.rounded()) },
+                utilizationPercent: extra.utilization,
+                currencyCode: currency,
+                disabledReason: extra.disabledReason
+            )
+        }
+
+        let scoped: [ScopedUsageWindow] = (limits ?? []).compactMap { limit in
+            guard limit.kind == "weekly_scoped",
+                  let name = limit.scope?.model?.displayName,
+                  let percent = limit.percent else { return nil }
+            return ScopedUsageWindow(
+                displayName: name,
+                window: UsageWindow(utilizationPercent: percent, resetsAt: limit.resetsAt?.date)
+            )
+        }
+
+        return AccountUsage(
+            fiveHour: fiveHour?.asUsageWindow,
+            sevenDay: sevenDay?.asUsageWindow,
+            sevenDayOpus: sevenDayOpus?.asUsageWindow,
+            sevenDaySonnet: sevenDaySonnet?.asUsageWindow,
+            modelWindows: scoped,
+            credits: credits,
+            prepaid: prepaid
         )
     }
+}
 
-    // Anthropic envía 0.0–1.0; si alguna cabecera viniera como 0–100, no debe
-    // multiplicarse dos veces y acabar mostrando 100% por error.
-    private static func normalizeUtilization(_ value: Double) -> Double {
-        let fraction = value > 1.0 ? value / 100.0 : value
-        return min(max(fraction, 0), 1.0)
+private struct PrepaidPayload: Decodable {
+    let amount: Int?
+    let balanceCents: Int?
+    let currency: String?
+
+    enum CodingKeys: String, CodingKey {
+        case amount, currency
+        case balanceCents = "balance_cents"
+    }
+}
+
+// resets_at llega como texto ISO-8601 en el endpoint de uso, pero el mismo campo
+// viaja como epoch en segundos en otras respuestas de Anthropic. Se aceptan los
+// dos para que un cambio de formato no deje la fila sin fecha.
+private struct FlexibleDate: Decodable {
+    let date: Date?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let seconds = try? container.decode(Double.self) {
+            date = Date(timeIntervalSince1970: seconds)
+            return
+        }
+        let text = try container.decode(String.self)
+        date = FlexibleDate.parse(text)
     }
 
-    private static func readCredentials() throws -> CredentialsFile.OAuth {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
+    private static func parse(_ text: String) -> Date? {
+        let withFractional = ISO8601DateFormatter()
+        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFractional.date(from: text) { return date }
 
-        // errSecItemNotFound: no hay sesión de Claude Code en este Mac. Cualquier
-        // otro fallo (p.ej. errSecUserCanceled/errSecAuthFailed) significa que el
-        // item existe pero macOS denegó el acceso al Keychain — la app no está
-        // firmada con el mismo certificado que creó el item, así que el primer
-        // arranque pide permiso al usuario vía el diálogo nativo del sistema.
-        guard status != errSecItemNotFound else {
-            throw LiveQuotaError.notLoggedIn
-        }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw LiveQuotaError.keychainAccessDenied
-        }
-        return try JSONDecoder().decode(CredentialsFile.self, from: data).claudeAiOauth
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: text)
     }
+}
 
-    // Solo se decodifican los campos que necesitamos; el archivo de credenciales
-    // de Claude Code trae más metadatos (scopes, tier de suscripción...) que no
-    // hacen falta aquí.
-    private struct CredentialsFile: Codable {
-        struct OAuth: Codable {
-            let accessToken: String
-            let expiresAt: Double
+// MARK: - Datos de cuenta que Claude Code deja en claro en disco
+
+// El UUID de organización hace falta para el endpoint de saldo prepago. Claude
+// Code lo escribe en ~/.claude.json, así que se lee de ahí en vez de gastar una
+// llamada extra a /api/oauth/profile.
+enum LocalAccountInfo {
+    static func organizationUUID() -> String? {
+        let path = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude.json")
+
+        guard let data = try? Data(contentsOf: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let account = json["oauthAccount"] as? [String: Any],
+              let uuid = account["organizationUuid"] as? String,
+              !uuid.isEmpty else {
+            return nil
         }
-        let claudeAiOauth: OAuth
+        return uuid
     }
 }
