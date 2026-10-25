@@ -10,7 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Configure popover content view
         let contentView = DashboardView(manager: telemetryManager)
         
-        popover.contentSize = NSSize(width: 380, height: 500)
+        popover.contentSize = NSSize(width: 380, height: 560)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: contentView)
         
@@ -19,7 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         if let button = statusItem?.button {
             // Use the standard terminal icon from SF Symbols
-            if let image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Claude Telemetry") {
+            if let image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "AI Telemetry") {
                 image.isTemplate = true // Ensures light/dark mode compliance in menubar
                 button.image = image
             } else {

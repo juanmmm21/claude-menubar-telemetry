@@ -55,13 +55,16 @@ class TelemetryManager: ObservableObject {
     @Published var accountUsage: AccountUsage? = nil
     @Published var liveQuotaUnavailableReason: String? = nil
 
-    // El llavero necesita una autorización del usuario que Claude Code invalida
-    // cada vez que renueva su token. Cuando toca volver a pedirla, la app no
-    // abre el diálogo por su cuenta: enciende esta bandera y espera a que el
-    // usuario pulse el botón del panel.
-    @Published var needsKeychainAuthorization: Bool = false
+    // Gemini: cuota real por modelo (vía la sesión de Gemini CLI) y actividad
+    // local del CLI. geminiUsage es nil mientras no haya dato en vivo.
+    @Published var geminiUsage: GeminiAccountUsage? = nil
+    @Published var geminiUnavailableReason: String? = nil
+    @Published var geminiLocal: GeminiLocalSummary = .empty
+    @Published var geminiInstalled: Bool = GeminiUsageService.isInstalled
 
     private let accountUsageService = AccountUsageService()
+    private let geminiUsageService = GeminiUsageService()
+    private let geminiLogScanner = GeminiLogScanner()
     private var lastLiveQuotaAttempt: Date = .distantPast
 
     // Iniciar con macOS (SMAppService, macOS 13+). El valor inicial refleja el
@@ -220,6 +223,12 @@ class TelemetryManager: ObservableObject {
                 }
             }
             
+            let geminiSummary = self.geminiLogScanner.scan()
+            DispatchQueue.main.async {
+                self.geminiLocal = geminiSummary
+                self.geminiInstalled = GeminiUsageService.isInstalled
+            }
+
             // Cache requests list to memory
             self.lastScannedRequests = allRequests
             self.aggregateAndPublish(allRequests)
@@ -233,27 +242,19 @@ class TelemetryManager: ObservableObject {
 
     private func refreshLiveQuotaIfDue() {
         guard Date().timeIntervalSince(lastLiveQuotaAttempt) >= minimumLiveQuotaInterval else { return }
-        fetchAccountUsage(allowingKeychainPrompt: false)
-    }
-
-    // Lo llama el botón del panel: es el único camino por el que la app abre el
-    // diálogo de permiso del llavero, para que nunca aparezca sin que el usuario
-    // lo haya pedido.
-    func authorizeKeychainAccess() {
-        fetchAccountUsage(allowingKeychainPrompt: true)
-    }
-
-    private func fetchAccountUsage(allowingKeychainPrompt: Bool) {
         lastLiveQuotaAttempt = Date()
+        fetchAccountUsage()
+        fetchGeminiUsage()
+    }
 
-        accountUsageService.fetchAccountUsage(allowingKeychainPrompt: allowingKeychainPrompt) { [weak self] result in
+    private func fetchAccountUsage() {
+        accountUsageService.fetchAccountUsage { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 switch result {
                 case .success(let usage):
                     self.accountUsage = usage
                     self.liveQuotaUnavailableReason = nil
-                    self.needsKeychainAuthorization = false
 
                     let sessionPercent = usage.fiveHour?.utilizationPercent ?? 0
                     self.isCurrentlyBlocked = sessionPercent >= 99.0
@@ -267,9 +268,31 @@ class TelemetryManager: ObservableObject {
                 case .failure(let error):
                     self.accountUsage = nil
                     self.nextResetDate = nil
-                    self.needsKeychainAuthorization = (error.isKeychainAuthorizationIssue)
                     self.liveQuotaUnavailableReason = error.userMessage
                     self.aggregateAndPublish(self.lastScannedRequests)
+                }
+            }
+        }
+    }
+
+    private func fetchGeminiUsage() {
+        // Sin ~/.gemini no hay nada que consultar: ni siquiera se intenta.
+        guard GeminiUsageService.isInstalled else {
+            geminiUsage = nil
+            geminiUnavailableReason = nil
+            return
+        }
+
+        geminiUsageService.fetchUsage { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                switch result {
+                case .success(let usage):
+                    self.geminiUsage = usage
+                    self.geminiUnavailableReason = nil
+                case .failure(let error):
+                    self.geminiUsage = nil
+                    self.geminiUnavailableReason = error.userMessage
                 }
             }
         }

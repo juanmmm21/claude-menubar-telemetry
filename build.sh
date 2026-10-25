@@ -46,12 +46,13 @@ swiftc -o "$MACOS_DIR/$APP_NAME" \
     src/TelemetryManager.swift \
     src/AccountUsageService.swift \
     src/ClaudeSessionStore.swift \
+    src/GeminiUsageService.swift \
+    src/GeminiLogScanner.swift \
     src/LaunchAtLoginService.swift \
     src/Theme.swift \
     -framework Cocoa \
     -framework SwiftUI \
     -framework Combine \
-    -framework Security \
     -framework ServiceManagement \
     -O
 
