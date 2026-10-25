@@ -2,7 +2,7 @@
 
 A native macOS menu bar utility that provides real-time token usage and subscription-quota telemetry for **Claude Code** and **Gemini CLI**.
 
-The interface is styled with a developer-centric, dark-mode **JetBrains Mono IDE** aesthetic, featuring custom monospaced typography, clean console tables, and terminal-like indicators.
+The interface is a translucent, frosted-glass popover with a terminal aesthetic: monospaced typography, `SNAKE_CASE` labels, segmented meters and terminal-like indicators.
 
 <div align="center">
   <img src="docs/screenshot.png" width="380" alt="Claude Menubar Telemetry popover showing session and weekly usage" />
@@ -16,36 +16,29 @@ The interface is styled with a developer-centric, dark-mode **JetBrains Mono IDE
 - **Zero Setup Log Aggregator**: Automatically watches and parses your local Claude Code sessions stored in `~/.claude/projects/` line-by-line. No Anthropic API keys or proxies are required.
 - **Real account-wide quota (optional)**: If you're signed in to Claude Code on this Mac, the app reuses that existing session to read your *actual* rate-limit usage across Desktop, web and CLI combined — not just an estimate from local CLI logs. See [Privacy & Safety](#privacy--safety) for exactly what that involves.
 - **Usage credits**: Models billed against credits rather than the weekly plan quota (Fable, most notably) are tracked where they actually live — your monthly credit limit, how much of it you've spent, what's left, and any prepaid balance on the account.
-- **Gemini too**: A second tab shows Gemini's real daily quota per model (Pro, Flash, Flash Lite…) with its reset countdown, read from the session Gemini CLI already has on this Mac, plus local activity (prompts and tokens over 24h / 7 days, per model) from Gemini CLI's own conversation logs.
+- **Gemini too**: Right below Claude, the popover shows Gemini's real daily quota per model (Pro, Flash, Flash Lite…) with its reset countdown, read from the session Gemini CLI already has on this Mac, plus local activity (prompts and tokens over 24h / 7 days, per model) from Gemini CLI's own conversation logs.
 - **Per-model weekly windows**: When Anthropic publishes a separate weekly window for a model, it gets its own progress bar instead of a made-up percentage.
 - **Live Reset Countdown**: Shows exactly when your current 5-hour session window resets, ticking down in real time.
 - **Multi-Model Breakdown**: Automatically groups and lists token usage and requests count per model (Claude Fable, Sonnet, Opus, etc.).
 - **No Keychain password prompts**: The Claude Code session is read through `/usr/bin/security`, the same tool Claude Code uses to store it, so macOS hands it over without asking — not once a day, not after every token refresh.
-- **JetBrains Mono UI**: Designed to blend into a developer's workspace with dark slate backgrounds (`#1E1F22`), grid borders (`#43454A`), and terminal indicators.
+- **Frosted-glass, terminal-style UI**: Translucent popover over the system blur, monospaced typography (JetBrains Mono when installed) and terminal indicators.
 
 ---
 
 ## Design Showcase
 
-The app uses the following JetBrains IDE color palette:
-- **Background**: Deep Slate `#1E1F22`
-- **Fields/Panels**: Lighter Slate `#2B2D30`
-- **Grid Lines**: Muted Gray `#43454A`
-- **Success Accent**: Emerald Green `#59A869`
-- **Focus Accent**: Royal Blue `#3574F0`
+The popover is a sheet of frosted glass: the system blur (`NSVisualEffectView`, HUD material) with a faint Claude-clay glow in one corner and a Gemini-violet one in the other, translucent panels with hairline borders, and the terminal look of its title bar everywhere — `SNAKE_CASE` labels, `>` section prompts, `// comments` for context and segmented meters that glow softly. Accent colors:
+- **Claude**: Clay `#D97757`
+- **Gemini**: Violet `#A87FFB`
+- **OK / warning / limit**: `#59A869` / `#EDA200` / `#DB5860` (meters turn amber at 70% and red at 90%)
 
-The whole popover follows the terminal look of its title bar: `SNAKE_CASE` labels, `>` section prompts, `// comments` for context and segmented meters instead of plain progress bars. When you click the Menu Bar icon (`terminal` system icon):
-1. **Header**: `>_ AI_TELEMETRY` with the state of the selected tab (`● LIVE`, `● LOGS_ONLY`, `● HIGH_USAGE` or `● RATE_LIMITED`).
-2. **Tabs**: `[CLAUDE]` and `[GEMINI]`, each with its headline percentage. The last tab you used is remembered.
-3. **Claude tab**:
-   - `CUOTA_CLAUDE`: 5-hour session meter with its real reset countdown, all-models weekly meter and one meter per model-scoped weekly window the account actually has. Without a live session it degrades to a plain Fable requests/tokens counter rather than inventing a percentage.
-   - `CREDITOS_USO`: Monthly credit limit, spent so far, remaining, and prepaid balance when the account has one.
-   - `MODELOS`: Prompts and tokens per model from the Claude Code logs.
-4. **Gemini tab**:
-   - `CUOTA_GEMINI`: One meter per model with the share of today's quota used, how many requests remain when Google reports it, and the reset countdown. The comment line shows your plan and Google account.
-   - `ACTIVIDAD_LOCAL`: Prompts and tokens from Gemini CLI over the last 24 hours and 7 days.
-   - `MODELOS_7D`: The same, per model.
-5. **Footer Controls**: Manually refresh statistics, see the last sync time, or quit.
+Everything fits in one view, so both providers can be read at a glance when you click the Menu Bar icon (`terminal` system icon):
+1. **Header**: `>_ AI_TELEMETRY` with the worst state of the two (`● LIVE`, `● LOGS_ONLY`, `● HIGH_USAGE` or `● RATE_LIMITED`).
+2. **`> CLAUDE`**: One line per limit — 5-hour session, all-models week and every model-scoped weekly window the account has — each with its meter, percentage and reset (a countdown under a day, weekday and time beyond). Below them, usage credits spent against the monthly limit and the prepaid balance when there is one. Without a live session it degrades to a plain Fable requests/tokens counter rather than inventing a percentage.
+3. **`> GEMINI`**: One line per model with the share of today's quota used and its reset, plus prompts and tokens from Gemini CLI over the last 24 hours. The comment line shows your plan and Google account.
+4. **`[+] MODELOS`**: Folded by default; prompts and tokens per model for Claude Code (all history) and Gemini CLI (7 days).
+5. **`[+] CONFIG`**: Start with macOS and the fallback limits used when there's no live Claude data.
+6. **Footer Controls**: Manually refresh statistics, see the last sync time, or quit.
 
 ---
 
