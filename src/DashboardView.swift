@@ -16,18 +16,6 @@ struct DashboardView: View {
     @State private var showModels: Bool = false
     @State private var showSettings: Bool = false
 
-    // Alto natural del contenido. El popover se ajusta a él para no dejar
-    // hueco abajo; solo hace scroll si no cabe en la pantalla.
-    @State private var contentHeight: CGFloat = 460
-
-    // El popover no sigue solo el tamaño de SwiftUI: AppDelegate recibe aquí
-    // el alto total y se lo aplica.
-    var onHeightChange: ((CGFloat) -> Void)? = nil
-
-    private var maxContentHeight: CGFloat {
-        (NSScreen.main?.visibleFrame.height ?? 800) - 160
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             headerView
@@ -36,36 +24,35 @@ struct DashboardView: View {
                 .fill(Theme.border)
                 .frame(height: 1)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    claudeSection
-                    geminiSection
+            // Sin ScrollView: el panel mide exactamente lo que ocupa el
+            // contenido y AppDelegate hace que el popover tome ese tamaño. Para
+            // que nunca se salga de la pantalla, los cajones son excluyentes y
+            // las tablas enseñan solo los modelos con más uso.
+            VStack(alignment: .leading, spacing: 18) {
+                claudeSection
+                geminiSection
 
-                    DashedLine()
+                DashedLine()
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        drawerToggle(title: "MODELOS", isOpen: $showModels)
-                        if showModels {
-                            modelsDrawer
-                        }
+                VStack(alignment: .leading, spacing: 10) {
+                    drawerToggle(title: "MODELOS", isOpen: showModels) {
+                        showModels.toggle()
+                        if showModels { showSettings = false }
+                    }
+                    if showModels {
+                        modelsDrawer
+                    }
 
-                        drawerToggle(title: "CONFIG", isOpen: $showSettings)
-                        if showSettings {
-                            settingsDrawer
-                        }
+                    drawerToggle(title: "CONFIG", isOpen: showSettings) {
+                        showSettings.toggle()
+                        if showSettings { showModels = false }
+                    }
+                    if showSettings {
+                        settingsDrawer
                     }
                 }
-                .padding(16)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
-                    }
-                )
             }
-            .frame(height: min(contentHeight, maxContentHeight))
-            .onPreferenceChange(ContentHeightKey.self) { height in
-                contentHeight = height
-            }
+            .padding(16)
 
             Rectangle()
                 .fill(Theme.border)
@@ -75,14 +62,7 @@ struct DashboardView: View {
         }
         .frame(width: 380)
         .fixedSize(horizontal: false, vertical: true)
-        .background(
-            GeometryReader { geo in
-                Color.clear.preference(key: TotalHeightKey.self, value: geo.size.height)
-            }
-        )
-        .onPreferenceChange(TotalHeightKey.self) { height in
-            onHeightChange?(height)
-        }
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(VisualEffectBackground(material: .hudWindow).ignoresSafeArea())
         .foregroundColor(Theme.textPrimary)
         .onReceive(timer) { _ in
@@ -315,14 +295,14 @@ struct DashboardView: View {
         .glassCard()
     }
 
-    private func drawerToggle(title: String, isOpen: Binding<Bool>) -> some View {
+    private func drawerToggle(title: String, isOpen: Bool, action: @escaping () -> Void) -> some View {
         Button(action: {
             withAnimation(.easeInOut(duration: 0.2)) {
-                isOpen.wrappedValue.toggle()
+                action()
             }
         }) {
             HStack {
-                Text(isOpen.wrappedValue ? "[-] \(title)" : "[+] \(title)")
+                Text(isOpen ? "[-] \(title)" : "[+] \(title)")
                     .font(Theme.monospaced(10, weight: .bold))
                     .foregroundColor(Theme.accent)
                 Spacer()
@@ -508,7 +488,7 @@ struct DashboardView: View {
                     .foregroundColor(Theme.textMuted)
                     .padding(12)
             } else {
-                ForEach(rows) { usage in
+                ForEach(Array(rows.prefix(Self.maxModelRows))) { usage in
                     DashedLine()
                     HStack {
                         Text(usage.modelName)
@@ -565,6 +545,9 @@ struct DashboardView: View {
             }
         }
     }
+
+    // Filas por tabla de modelos, para que el panel quepa en pantalla.
+    private static let maxModelRows = 6
 
     // MARK: - Estado
 
@@ -786,20 +769,6 @@ struct DashboardView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return formatter.string(from: date)
-    }
-}
-
-private struct ContentHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-private struct TotalHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 

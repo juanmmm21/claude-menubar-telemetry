@@ -8,27 +8,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Configure popover content view
-        var contentView = DashboardView(manager: telemetryManager)
-        // El popover toma el alto que mide la vista, así no queda hueco abajo
-        // y crece al abrir MODELOS o CONFIG.
-        contentView.onHeightChange = { [weak self] height in
-            guard height > 0 else { return }
-            // Fuera del pase de layout en curso de SwiftUI.
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                let size = NSSize(width: 380, height: ceil(height))
-                if self.popover.contentSize != size {
-                    self.popover.contentSize = size
-                }
-            }
+        let contentView = DashboardView(manager: telemetryManager)
+        let hostingController = NSHostingController(rootView: contentView)
+
+        // El popover toma el alto natural de la vista (sin hueco abajo) y lo
+        // sigue al abrir o cerrar MODELOS y CONFIG, manteniendo la flecha
+        // pegada al icono. En macOS 12 no existe esta opción: alto fijo.
+        if #available(macOS 13.0, *) {
+            hostingController.sizingOptions = [.preferredContentSize]
+        } else {
+            popover.contentSize = NSSize(width: 380, height: 600)
         }
 
-        popover.contentSize = NSSize(width: 380, height: 560)
         popover.behavior = .transient
         // Apariencia oscura fija para que el cristal del panel (y la flecha del
         // popover) se vea igual con el modo claro del sistema.
         popover.appearance = NSAppearance(named: .darkAqua)
-        popover.contentViewController = NSHostingController(rootView: contentView)
+        popover.contentViewController = hostingController
         
         // Setup menu bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
