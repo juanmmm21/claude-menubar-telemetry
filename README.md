@@ -1,11 +1,11 @@
 # Claude Menubar Telemetry
 
-A native macOS menu bar utility that provides real-time token usage and subscription-quota telemetry for **Claude Code** and **Gemini CLI**.
+A native macOS menu bar utility that shows, at a glance, how much of your **Claude** and **Gemini** plan limits you've used — the real account-wide figures, with when each limit resets.
 
 The interface is a translucent, frosted-glass popover with a terminal aesthetic: monospaced typography, `SNAKE_CASE` labels, segmented meters and terminal-like indicators.
 
 <div align="center">
-  <img src="docs/screenshot.png" width="380" alt="Claude Menubar Telemetry popover showing session and weekly usage" />
+  <img src="docs/screenshot.png" width="380" alt="AI Telemetry popover showing Claude and Gemini session and weekly usage" />
 </div>
 
 ---
@@ -19,9 +19,9 @@ The interface is a translucent, frosted-glass popover with a terminal aesthetic:
 - **Gemini too**: Right below Claude, the popover shows how much of your Google account's Gemini allowance you've used — the current 5-hour allowance and the weekly limit, the same figures as `gemini.google.com/usage`, covering the web, mobile and every other Gemini app. Sign in to Google once from the popover and it stays connected. Gemini CLI users also get its per-model quota and local activity.
 - **Per-model weekly windows**: When Anthropic publishes a separate weekly window for a model, it gets its own progress bar instead of a made-up percentage.
 - **Live Reset Countdown**: Shows exactly when your current 5-hour session window resets, ticking down in real time.
-- **Multi-Model Breakdown**: Automatically groups and lists token usage and requests count per model (Claude Fable, Sonnet, Opus, etc.).
+- **Multi-Model Breakdown**: Groups prompts and tokens per model (Claude Fable, Sonnet, Opus…, and Gemini models if you use Gemini CLI) in a folding table.
 - **No Keychain password prompts**: The Claude Code session is read through `/usr/bin/security`, the same tool Claude Code uses to store it, so macOS hands it over without asking — not once a day, not after every token refresh.
-- **Frosted-glass, terminal-style UI**: Translucent popover over the system blur, monospaced typography (JetBrains Mono when installed) and terminal indicators.
+- **Frosted-glass, terminal-style UI**: Translucent popover over the system blur, monospaced typography (JetBrains Mono when installed) and terminal indicators. It sizes itself to its content: no empty space, and it grows when a drawer opens.
 
 ---
 
@@ -33,11 +33,11 @@ The popover is a sheet of frosted glass: the system blur (`NSVisualEffectView`, 
 - **OK / warning / limit**: `#59A869` / `#EDA200` / `#DB5860` (meters turn amber at 70% and red at 90%)
 
 Everything fits in one view, so both providers can be read at a glance when you click the Menu Bar icon (`terminal` system icon):
-1. **Header**: `>_ AI_TELEMETRY` with the worst state of the two (`● LIVE`, `● LOGS_ONLY`, `● HIGH_USAGE` or `● RATE_LIMITED`).
+1. **Header**: `>_ AI_TELEMETRY` with the worst state of the two providers. Each section also has its own badge: `● LIVE` (real account data), `● HIGH_USAGE` (90%+), `● RATE_LIMITED` (limit reached), `● LOGS_ONLY` (Claude without a live session, local estimate), `● LOGIN` (Gemini waiting for you to connect your Google account) or `● NO_DATA`.
 2. **`> CLAUDE`**: One line per limit — 5-hour session, all-models week and every model-scoped weekly window the account has — each with its meter, percentage and reset (a countdown under a day, weekday and time beyond). Below them, usage credits spent against the monthly limit and the prepaid balance when there is one. Without a live session it degrades to a plain Fable requests/tokens counter rather than inventing a percentage.
-3. **`> GEMINI`**: Your Google account's Gemini app usage, exactly as `gemini.google.com/usage` shows it — the current allowance (refreshes every 5 hours) and the weekly limit, each with its reset — plus your plan. If you also use Gemini CLI, its per-model quota and recent activity appear underneath.
-4. **`[+] MODELOS`**: Folded by default; prompts and tokens per model for Claude Code (all history) and Gemini CLI (7 days).
-5. **`[+] CONFIG`**: Start with macOS and the fallback limits used when there's no live Claude data.
+3. **`> GEMINI`**: Your Google account's Gemini app usage, exactly as `gemini.google.com/usage` shows it — `SESION_5H` (the current allowance, refreshed every 5 hours) and `SEMANA` (the weekly limit), each with its reset — plus your plan in the comment line. Until you connect your Google account it shows a `CUENTA_GOOGLE · conectar →` row instead. If you also use Gemini CLI, its per-model quota (`CLI_…`) and last-24h activity appear underneath.
+4. **`[+] MODELOS`**: Folded by default; prompts and tokens for the 6 most-used models of Claude Code (all history) and, if you use it, Gemini CLI (7 days).
+5. **`[+] CONFIG`**: Start with macOS, `DESCONECTAR_GOOGLE` (forget the app's Google session) and the fallback limits used when there's no live Claude data. Only one drawer is open at a time, so the popover always fits on screen.
 6. **Footer Controls**: Manually refresh statistics, see the last sync time, or quit.
 
 ---
@@ -50,7 +50,7 @@ Everything fits in one view, so both providers can be read at a glance when you 
 - **Gemini app usage**: Google publishes no API for it; the only source is the `gemini.google.com/usage` page, which needs a signed-in Google session. The app does **not** read your browser's cookies (Chrome encrypts them with a Keychain key, which would bring the password prompts back). Instead, the `CUENTA_GOOGLE · conectar →` row opens a Google sign-in window inside the app; the session is stored in the app's own WebKit storage. When you open the popover, the app loads that page in a hidden web view at most once a minute and reads the two percentages and reset times from its text — nothing is sent anywhere else. `[+] CONFIG → DESCONECTAR_GOOGLE` deletes that session. Because it reads a web page rather than an API, a redesign of that page by Google can break it; the section then says so and the rest of the app keeps working.
 - **Gemini CLI**: if you signed in to Gemini CLI with Google, the app reads `~/.gemini/oauth_creds.json` and asks Google's Code Assist API (`cloudcode-pa.googleapis.com`) for your plan and remaining quota, the same calls Gemini CLI makes for `/stats`. Neither consumes quota. Google access tokens only last an hour, so when the one in that file has expired the app renews it with Gemini CLI's public OAuth client; Google doesn't rotate the refresh token when doing so, so this can't log the CLI out. The renewed token lives only in memory — the app never writes to `~/.gemini`. Gemini CLI setups using an API key, Vertex AI or encrypted credential storage have no such session, so only the local log figures are shown.
 - **Upgrading from an earlier version**: older versions kept a copy of the Claude token in a Keychain item of their own named `com.juanmmm21.ClaudeTelemetry.session`. It's no longer used; you can delete it from Keychain Access if you want.
-- **Fails closed, not open**: if you aren't logged into Claude Code or Gemini CLI, a session has expired, or you're offline, the app falls back to the local, log-only approximation described above — it never crashes or blocks waiting on the network.
+- **Fails closed, not open**: if you aren't logged into Claude Code, Google or Gemini CLI, a session has expired, Google changes its usage page, or you're offline, each section says why in its `//` comment and falls back to what it can still show (for Claude, the local log-only approximation described below) — the app never crashes or blocks waiting on the network.
 - **Read-only on your session logs**: local log parsing only accumulates numeric token values; it never writes to, deletes, or modifies your project or Claude session files.
 
 ---
@@ -79,7 +79,11 @@ Once the build is complete, you can launch the app directly:
 ```bash
 open build/ClaudeTelemetry.app
 ```
-To install it permanently, simply drag the compiled app inside the `build/` folder into your macOS `/Applications` directory.
+To install it permanently, simply drag the compiled app inside the `build/` folder into your macOS `/Applications` directory. When updating, quit the running copy first (`QUIT` in the popover, or `killall ClaudeTelemetry`).
+
+### Step 4: Connect your accounts
+- **Claude**: nothing to do — if you're signed in to Claude Code on this Mac, the `> CLAUDE` section shows `● LIVE` straight away. If it says the session expired, open Claude Code once and it renews it.
+- **Gemini**: click `CUENTA_GOOGLE · conectar →` in the `> GEMINI` section and sign in to Google in the window that opens. It closes by itself when you're done and the section switches to `● LIVE`. You only do this once.
 
 ---
 
@@ -89,10 +93,12 @@ To install it permanently, simply drag the compiled app inside the `build/` fold
 ├── build.sh                 # Standard macOS build script
 ├── .gitignore               # Excludes intermediate compiler targets
 ├── README.md                # Project documentation
+├── docs/
+│   └── screenshot.png       # Popover screenshot used above
 └── src/
     ├── main.swift                # Application entry point
     ├── AppDelegate.swift         # Status bar button and NSPopover controllers
-    ├── DashboardView.swift       # SwiftUI monospaced interface
+    ├── DashboardView.swift       # SwiftUI interface (glass panels, meters, drawers)
     ├── TelemetryManager.swift    # Log parsing logic, cache system & rates
     ├── AccountUsageService.swift # Optional live account-quota & usage-credits lookup
     ├── ClaudeSessionStore.swift  # Prompt-free read of the Claude Code session
@@ -100,7 +106,7 @@ To install it permanently, simply drag the compiled app inside the `build/` fold
     ├── GeminiLogScanner.swift    # Gemini CLI conversation logs (prompts & tokens)
     ├── GeminiWebUsageService.swift # Gemini app usage from gemini.google.com/usage
     ├── LaunchAtLoginService.swift # "Start with macOS" registration (SMAppService)
-    ├── Theme.swift               # Color palette & JetBrains Mono typography tokens
+    ├── Theme.swift               # Translucent palette, provider colors & typography
     └── AppIcon.png               # High-resolution source icon (1024x1024)
 ```
 
