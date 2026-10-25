@@ -48,12 +48,14 @@ swiftc -o "$MACOS_DIR/$APP_NAME" \
     src/ClaudeSessionStore.swift \
     src/GeminiUsageService.swift \
     src/GeminiLogScanner.swift \
+    src/GeminiWebUsageService.swift \
     src/LaunchAtLoginService.swift \
     src/Theme.swift \
     -framework Cocoa \
     -framework SwiftUI \
     -framework Combine \
     -framework ServiceManagement \
+    -framework WebKit \
     -O
 
 echo "=== Generating Info.plist ==="

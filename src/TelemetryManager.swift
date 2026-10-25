@@ -55,8 +55,11 @@ class TelemetryManager: ObservableObject {
     @Published var accountUsage: AccountUsage? = nil
     @Published var liveQuotaUnavailableReason: String? = nil
 
-    // Gemini: cuota real por modelo (vía la sesión de Gemini CLI) y actividad
-    // local del CLI. geminiUsage es nil mientras no haya dato en vivo.
+    // Uso de la app de Gemini de la cuenta de Google (lo de gemini.google.com/usage).
+    @Published var geminiApp: GeminiAppUsageState = .unknown
+
+    // Gemini CLI: cuota por modelo (vía la sesión del CLI) y actividad local.
+    // geminiUsage es nil mientras no haya dato en vivo.
     @Published var geminiUsage: GeminiAccountUsage? = nil
     @Published var geminiUnavailableReason: String? = nil
     @Published var geminiLocal: GeminiLocalSummary = .empty
@@ -65,6 +68,7 @@ class TelemetryManager: ObservableObject {
     private let accountUsageService = AccountUsageService()
     private let geminiUsageService = GeminiUsageService()
     private let geminiLogScanner = GeminiLogScanner()
+    private let geminiWebUsageService = GeminiWebUsageService()
     private var lastLiveQuotaAttempt: Date = .distantPast
 
     // Iniciar con macOS (SMAppService, macOS 13+). El valor inicial refleja el
@@ -245,6 +249,34 @@ class TelemetryManager: ObservableObject {
         lastLiveQuotaAttempt = Date()
         fetchAccountUsage()
         fetchGeminiUsage()
+        fetchGeminiAppUsage()
+    }
+
+    private func fetchGeminiAppUsage() {
+        geminiWebUsageService.fetchUsage { [weak self] state in
+            guard let self = self else { return }
+            // Un fallo puntual no borra el último dato bueno; solo lo sustituye
+            // otro dato, o saber que ya no hay sesión.
+            if case .unavailable = state, case .loaded = self.geminiApp {
+                return
+            }
+            self.geminiApp = state
+        }
+    }
+
+    // Abre la ventana de inicio de sesión de Google. Al terminar, lee el uso.
+    func connectGoogleAccount() {
+        geminiWebUsageService.presentLogin { [weak self] in
+            self?.fetchGeminiAppUsage()
+        }
+    }
+
+    func disconnectGoogleAccount() {
+        geminiWebUsageService.signOut { [weak self] in
+            DispatchQueue.main.async {
+                self?.geminiApp = .needsLogin
+            }
+        }
     }
 
     private func fetchAccountUsage() {

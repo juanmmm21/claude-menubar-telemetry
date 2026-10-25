@@ -20,13 +20,9 @@ struct DashboardView: View {
         VStack(spacing: 0) {
             headerView
 
-            // Hairline con los dos colores: Claude a un lado, Gemini al otro.
-            LinearGradient(
-                colors: [Theme.claude.opacity(0.7), Theme.gemini.opacity(0.7)],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(height: 1)
+            Rectangle()
+                .fill(Theme.border)
+                .frame(height: 1)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -57,26 +53,12 @@ struct DashboardView: View {
             footerView
         }
         .frame(width: 380, height: 600)
-        .background(glassBackground)
+        .background(VisualEffectBackground(material: .hudWindow).ignoresSafeArea())
         .foregroundColor(Theme.textPrimary)
         .onReceive(timer) { _ in
             tick.toggle() // Forces redraw of countdown strings
             manager.updateBlockStateIfNeeded() // Checks timeline for real-time status transitions
         }
-    }
-
-    // Cristal esmerilado del sistema con un brillo muy tenue de cada proveedor
-    // en esquinas opuestas.
-    private var glassBackground: some View {
-        ZStack {
-            VisualEffectBackground(material: .hudWindow)
-            LinearGradient(
-                colors: [Theme.claude.opacity(0.10), Color.clear, Theme.gemini.opacity(0.10)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        }
-        .ignoresSafeArea()
     }
 
     // MARK: - Cabecera
@@ -187,25 +169,62 @@ struct DashboardView: View {
 
     private var geminiSection: some View {
         providerSection("GEMINI", color: Theme.gemini, status: geminiStatus, comment: geminiScopeComment) {
-            if manager.geminiInstalled {
-                if let models = manager.geminiUsage?.models, !models.isEmpty {
-                    ForEach(models) { model in
-                        meterRow(
-                            snakeCase(GeminiModelNames.displayName(model.modelId), dropping: "GEMINI"),
-                            percent: model.usedPercent,
-                            trailing: model.resetsAt.map { shortReset($0) } ?? "—",
-                            color: Theme.gemini
-                        )
-                        DashedLine()
-                    }
+            geminiAppRows
+
+            // Gemini CLI solo aparece si se usa: cuota por modelo si hay
+            // sesión del CLI, y actividad local si hay logs.
+            if let models = manager.geminiUsage?.models, !models.isEmpty {
+                ForEach(models) { model in
+                    DashedLine()
+                    meterRow(
+                        "CLI_" + snakeCase(GeminiModelNames.displayName(model.modelId), dropping: "GEMINI"),
+                        percent: model.usedPercent,
+                        trailing: model.resetsAt.map { shortReset($0) } ?? "—",
+                        color: Theme.gemini
+                    )
                 }
+            }
+            if manager.geminiLocal.prompts7d > 0 {
+                DashedLine()
                 valueRow(
-                    "LOCAL_24H",
+                    "CLI_24H",
                     value: "\(manager.geminiLocal.prompts24h) prompts · \(formatNumber(manager.geminiLocal.tokens24h)) tok"
                 )
-            } else {
-                valueRow("GEMINI_CLI", value: "no detectado", valueColor: Theme.textMuted)
             }
+        }
+    }
+
+    // Uso de la app de Gemini (gemini.google.com/usage): cupo actual, que se
+    // renueva cada 5 horas, y límite semanal.
+    @ViewBuilder
+    private var geminiAppRows: some View {
+        switch manager.geminiApp {
+        case .loaded(let usage):
+            meterRow(
+                "SESION_5H",
+                percent: usage.current?.usedPercent ?? 0,
+                trailing: geminiResetLabel(usage.current),
+                color: Theme.gemini
+            )
+            DashedLine()
+            meterRow(
+                "SEMANA",
+                percent: usage.weekly?.usedPercent ?? 0,
+                trailing: geminiResetLabel(usage.weekly),
+                color: Theme.gemini
+            )
+        case .needsLogin:
+            Button(action: {
+                manager.connectGoogleAccount()
+            }) {
+                valueRow("CUENTA_GOOGLE", value: "conectar →", valueColor: Theme.accent)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        case .unknown:
+            valueRow("APP_GEMINI", value: "consultando…", valueColor: Theme.textSecondary)
+        case .unavailable:
+            valueRow("APP_GEMINI", value: "sin dato", valueColor: Theme.textSecondary)
         }
     }
 
@@ -219,9 +238,9 @@ struct DashboardView: View {
                 color: Theme.claude
             ) { $0.contains("Fable") }
 
-            if manager.geminiInstalled {
+            if !manager.geminiLocal.models7d.isEmpty {
                 modelTable(
-                    title: "GEMINI · 7 días",
+                    title: "GEMINI CLI · 7 días",
                     rows: manager.geminiLocal.models7d,
                     color: Theme.gemini
                 ) { $0.contains("Pro") }
@@ -238,6 +257,19 @@ struct DashboardView: View {
                         .foregroundColor(Theme.textPrimary)
                 }
                 .toggleStyle(.checkbox)
+
+                DashedLine()
+            }
+
+            if manager.geminiApp != .needsLogin {
+                Button(action: {
+                    manager.disconnectGoogleAccount()
+                }) {
+                    Text("DESCONECTAR_GOOGLE")
+                        .font(Theme.monospaced(10, weight: .bold))
+                        .foregroundColor(Theme.error)
+                }
+                .buttonStyle(.plain)
 
                 DashedLine()
             }
@@ -357,7 +389,6 @@ struct DashboardView: View {
             Circle()
                 .fill(status.color)
                 .frame(width: size - 3, height: size - 3)
-                .shadow(color: status.color.opacity(0.8), radius: 3)
             Text(status.label)
                 .font(Theme.monospaced(size, weight: .bold))
                 .foregroundColor(status.color)
@@ -514,15 +545,21 @@ struct DashboardView: View {
     }
 
     private var geminiStatus: StatusBadge {
-        guard manager.geminiInstalled else { return ("NOT_FOUND", Theme.textMuted) }
         if isGeminiLimitReached { return ("RATE_LIMITED", Theme.error) }
         if (geminiMaxUsedPercent ?? 0) >= 90 { return ("HIGH_USAGE", Theme.warning) }
-        return manager.geminiUsage != nil ? ("LIVE", Theme.success) : ("LOGS_ONLY", Theme.textSecondary)
+        switch manager.geminiApp {
+        case .loaded:
+            return ("LIVE", Theme.success)
+        case .needsLogin:
+            return ("LOGIN", Theme.warning)
+        case .unknown, .unavailable:
+            return manager.geminiUsage != nil ? ("LIVE", Theme.success) : ("NO_DATA", Theme.textSecondary)
+        }
     }
 
     // La cabecera resume lo peor de los dos.
     private var overallStatus: StatusBadge {
-        let candidates = manager.geminiInstalled ? [claudeStatus, geminiStatus] : [claudeStatus]
+        let candidates = [claudeStatus, geminiStatus]
         for label in ["RATE_LIMITED", "HIGH_USAGE"] {
             if let match = candidates.first(where: { $0.label == label }) {
                 return match
@@ -612,8 +649,18 @@ struct DashboardView: View {
 
     // MARK: - Helpers Gemini
 
+    private var geminiAppUsage: GeminiAppUsage? {
+        if case .loaded(let usage) = manager.geminiApp {
+            return usage
+        }
+        return nil
+    }
+
+    // Lo más gastado entre la app (cupo actual y semanal) y Gemini CLI.
     private var geminiMaxUsedPercent: Double? {
-        manager.geminiUsage?.models.map(\.usedPercent).max()
+        let app = [geminiAppUsage?.current?.usedPercent, geminiAppUsage?.weekly?.usedPercent].compactMap { $0 }
+        let cli = manager.geminiUsage?.models.map(\.usedPercent) ?? []
+        return (app + cli).max()
     }
 
     private var isGeminiLimitReached: Bool {
@@ -621,17 +668,26 @@ struct DashboardView: View {
     }
 
     private var geminiScopeComment: String {
-        guard manager.geminiInstalled else {
-            return "instálalo con npm i -g @google/gemini-cli"
-        }
-        if let usage = manager.geminiUsage {
-            let parts = ["cuota diaria real", usage.planName, usage.email].compactMap { $0 }
+        switch manager.geminiApp {
+        case .loaded(let usage):
+            let parts = ["dato real de tu cuenta de Google", usage.planName.map { "plan \($0)" }].compactMap { $0 }
             return parts.joined(separator: " · ")
+        case .needsLogin:
+            return "conecta tu cuenta de Google una vez para ver el uso de la app"
+        case .unavailable(let reason):
+            return reason
+        case .unknown:
+            return "consultando gemini.google.com/usage…"
         }
-        if let reason = manager.geminiUnavailableReason {
-            return "solo logs locales · \(reason)"
+    }
+
+    // Hora o cuenta atrás si se pudo interpretar; si no, el texto de Google.
+    private func geminiResetLabel(_ window: GeminiAppWindow?) -> String {
+        if let date = window?.resetsAt {
+            return shortReset(date)
         }
-        return "consultando la cuota…"
+        guard let text = window?.resetText else { return "—" }
+        return text.split(separator: " ").suffix(1).joined()
     }
 
     // MARK: - Formato
@@ -757,7 +813,6 @@ struct SegmentedMeter: View {
                         .frame(width: segmentWidth(in: geo.size.width))
                 }
             }
-            .shadow(color: color.opacity(filledSegments > 0 ? 0.35 : 0), radius: 3)
         }
         .frame(height: 8)
     }
