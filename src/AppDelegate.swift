@@ -10,8 +10,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Configure popover content view
         let contentView = DashboardView(manager: telemetryManager)
         
-        popover.contentSize = NSSize(width: 380, height: 560)
+        popover.contentSize = NSSize(width: 380, height: 600)
         popover.behavior = .transient
+        // Apariencia oscura fija para que el cristal del panel (y la flecha del
+        // popover) se vea igual con el modo claro del sistema.
+        popover.appearance = NSAppearance(named: .darkAqua)
         popover.contentViewController = NSHostingController(rootView: contentView)
         
         // Setup menu bar item
