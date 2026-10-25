@@ -62,8 +62,7 @@ struct AccountUsage: Equatable {
 
 enum LiveQuotaError: Error {
     case notLoggedIn            // No hay sesión de Claude Code en este Mac
-    case authorizationRequired  // Falta el permiso del llavero; el usuario debe concederlo desde el panel
-    case keychainAccessDenied   // El usuario denegó el diálogo del sistema
+    case keychainAccessDenied   // macOS no dejó leer las credenciales de Claude Code
     case sessionExpired         // El token guardado caducó: solo Claude Code puede renovarlo
     case unauthorized           // La API rechazó el token
     case network(String)
@@ -71,27 +70,16 @@ enum LiveQuotaError: Error {
 }
 
 extension LiveQuotaError {
-    // Distingue los fallos que el usuario puede resolver con un clic (conceder
-    // el permiso del llavero) de los que no dependen de él.
-    var isKeychainAuthorizationIssue: Bool {
-        switch self {
-        case .authorizationRequired, .keychainAccessDenied, .unauthorized: return true
-        default: return false
-        }
-    }
-
     var userMessage: String {
         switch self {
         case .notLoggedIn:
             return "Sin sesión de Claude Code en este Mac"
-        case .authorizationRequired:
-            return "Falta el permiso del llavero"
         case .keychainAccessDenied:
-            return "Permiso del llavero denegado"
+            return "macOS no dejó leer la sesión de Claude Code"
         case .sessionExpired:
             return "Sesión de Claude Code caducada — ábrelo para renovarla"
         case .unauthorized:
-            return "Anthropic rechazó el token — vuelve a autorizar"
+            return "Anthropic rechazó el token — abre Claude Code para renovarlo"
         case .network(let detail):
             return "Sin conexión con Anthropic (\(detail))"
         case .unavailable:
@@ -101,7 +89,7 @@ extension LiveQuotaError {
 }
 
 // Lee el uso real de la cuenta reutilizando la sesión OAuth que Claude Code ya
-// tiene guardada en este Mac.
+// tiene guardada en este Mac (ver ClaudeSessionStore: sin diálogos del llavero).
 //
 // La fuente es GET /api/oauth/usage, el mismo endpoint que alimenta al comando
 // /usage del CLI: no consume cuota (antes esta app mandaba un /v1/messages de
@@ -121,13 +109,19 @@ final class AccountUsageService {
         self.store = store
     }
 
-    // `allowingKeychainPrompt: false` en los sondeos periódicos, para que el
-    // diálogo del llavero no interrumpa al usuario por sorpresa.
-    func fetchAccountUsage(allowingKeychainPrompt: Bool,
-                           completion: @escaping (Result<AccountUsage, LiveQuotaError>) -> Void) {
+    // Leer las credenciales lanza /usr/bin/security, así que todo el trabajo se
+    // hace fuera del hilo principal. `completion` llega en una cola cualquiera.
+    func fetchAccountUsage(completion: @escaping (Result<AccountUsage, LiveQuotaError>) -> Void) {
+        DispatchQueue.global(qos: .utility).async {
+            self.fetchAccountUsage(isRetry: false, completion: completion)
+        }
+    }
+
+    private func fetchAccountUsage(isRetry: Bool,
+                                   completion: @escaping (Result<AccountUsage, LiveQuotaError>) -> Void) {
         let claudeSession: ClaudeSession
         do {
-            claudeSession = try store.session(allowingPrompt: allowingKeychainPrompt)
+            claudeSession = try store.session()
         } catch let error as SessionError {
             completion(.failure(Self.map(error)))
             return
@@ -150,10 +144,15 @@ final class AccountUsageService {
                 return
             }
             if http.statusCode == 401 || http.statusCode == 403 {
-                // El token cacheado ya no vale: el siguiente intento debe volver
-                // al llavero de Claude Code a por uno nuevo.
-                self.store.invalidateCachedSession()
-                completion(.failure(.unauthorized))
+                // El token en memoria ya no vale. Claude Code puede haberlo
+                // renovado ya en el llavero, así que se vuelve a leer una vez
+                // antes de dar el fallo por bueno.
+                self.store.invalidate()
+                if isRetry {
+                    completion(.failure(.unauthorized))
+                } else {
+                    self.fetchAccountUsage(isRetry: true, completion: completion)
+                }
                 return
             }
             guard http.statusCode == 200,
@@ -215,7 +214,6 @@ final class AccountUsageService {
     private static func map(_ error: SessionError) -> LiveQuotaError {
         switch error {
         case .notLoggedIn: return .notLoggedIn
-        case .authorizationRequired: return .authorizationRequired
         case .accessDenied: return .keychainAccessDenied
         case .expired: return .sessionExpired
         case .malformed: return .unavailable

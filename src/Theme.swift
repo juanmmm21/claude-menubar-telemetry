@@ -16,6 +16,10 @@ struct Theme {
     static let success = Color(hex: "#59A869")           // JetBrains Green (OK)
     static let warning = Color(hex: "#EDA200")           // JetBrains Orange/Yellow
     static let error = Color(hex: "#DB5860")             // JetBrains Red
+
+    // Color de cada proveedor en pestañas y barras
+    static let claude = Color(hex: "#D97757")            // Arcilla de Anthropic
+    static let gemini = Color(hex: "#A87FFB")            // Violeta del degradado de Gemini
     
     // Monospaced typography support
     static func monospaced(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
