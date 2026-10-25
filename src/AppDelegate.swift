@@ -8,9 +8,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Configure popover content view
-        let contentView = DashboardView(manager: telemetryManager)
-        
-        popover.contentSize = NSSize(width: 380, height: 600)
+        var contentView = DashboardView(manager: telemetryManager)
+        // El popover toma el alto que mide la vista, así no queda hueco abajo
+        // y crece al abrir MODELOS o CONFIG.
+        contentView.onHeightChange = { [weak self] height in
+            guard height > 0 else { return }
+            // Fuera del pase de layout en curso de SwiftUI.
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let size = NSSize(width: 380, height: ceil(height))
+                if self.popover.contentSize != size {
+                    self.popover.contentSize = size
+                }
+            }
+        }
+
+        popover.contentSize = NSSize(width: 380, height: 560)
         popover.behavior = .transient
         // Apariencia oscura fija para que el cristal del panel (y la flecha del
         // popover) se vea igual con el modo claro del sistema.
@@ -57,6 +70,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             // Make the popover window key to ensure it is focused
             popover.contentViewController?.view.window?.makeKey()
+            // Sin esto macOS enfoca el primer botón y le pinta el anillo azul.
+            // Va en diferido porque SwiftUI asigna ese foco al terminar de mostrarse.
+            DispatchQueue.main.async { [weak self] in
+                self?.popover.contentViewController?.view.window?.makeFirstResponder(nil)
+            }
         }
     }
 }

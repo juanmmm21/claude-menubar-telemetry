@@ -16,6 +16,18 @@ struct DashboardView: View {
     @State private var showModels: Bool = false
     @State private var showSettings: Bool = false
 
+    // Alto natural del contenido. El popover se ajusta a él para no dejar
+    // hueco abajo; solo hace scroll si no cabe en la pantalla.
+    @State private var contentHeight: CGFloat = 460
+
+    // El popover no sigue solo el tamaño de SwiftUI: AppDelegate recibe aquí
+    // el alto total y se lo aplica.
+    var onHeightChange: ((CGFloat) -> Void)? = nil
+
+    private var maxContentHeight: CGFloat {
+        (NSScreen.main?.visibleFrame.height ?? 800) - 160
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             headerView
@@ -44,6 +56,15 @@ struct DashboardView: View {
                     }
                 }
                 .padding(16)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
+                    }
+                )
+            }
+            .frame(height: min(contentHeight, maxContentHeight))
+            .onPreferenceChange(ContentHeightKey.self) { height in
+                contentHeight = height
             }
 
             Rectangle()
@@ -52,7 +73,16 @@ struct DashboardView: View {
 
             footerView
         }
-        .frame(width: 380, height: 600)
+        .frame(width: 380)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: TotalHeightKey.self, value: geo.size.height)
+            }
+        )
+        .onPreferenceChange(TotalHeightKey.self) { height in
+            onHeightChange?(height)
+        }
         .background(VisualEffectBackground(material: .hudWindow).ignoresSafeArea())
         .foregroundColor(Theme.textPrimary)
         .onReceive(timer) { _ in
@@ -756,6 +786,20 @@ struct DashboardView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return formatter.string(from: date)
+    }
+}
+
+private struct ContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct TotalHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
