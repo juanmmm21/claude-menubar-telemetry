@@ -6,36 +6,40 @@ import AppKit
 // ventana blanca que sobre un fondo de escritorio oscuro. Cada color tiene una
 // versión para cada modo con contraste suficiente sobre su fondo.
 struct Theme {
-    // Superficies
-    static let background = dynamic(light: "#F2F2F5", dark: "#232325")  // Fondo del panel
-    static let card = dynamic(light: "#FFFFFF", dark: "#2F2F32")        // Tarjetas
-    static let border = dynamic(light: "#E4E4E9", dark: "#3E3E42")      // Bordes y separadores
-    static let track = dynamic(light: "#E8E8ED", dark: "#46464A")       // Parte vacía de las barras e iconos
-    // Sombra suave de las tarjetas; en modo oscuro no se vería, así que no hay.
-    static let shadow = dynamic(light: NSColor.black.withAlphaComponent(0.07), dark: .clear)
+    // Superficies: grises fríos, como un editor de código en modo claro u oscuro.
+    static let background = dynamic(light: "#F3F4F6", dark: "#1B1D21")  // Fondo del panel
+    static let card = dynamic(light: "#FFFFFF", dark: "#25282D")        // Paneles
+    static let border = dynamic(light: "#DDE1E6", dark: "#383C43")      // Bordes y separadores
+    static let track = dynamic(light: "#E6E9ED", dark: "#3A3F46")       // Parte vacía de las barras
 
     // Texto
-    static let textPrimary = dynamic(light: "#1D1D1F", dark: "#F5F5F7")
-    static let textSecondary = dynamic(light: "#55555A", dark: "#AEAEB2")
+    static let textPrimary = dynamic(light: "#1F2328", dark: "#EDEFF2")
+    static let textSecondary = dynamic(light: "#57606A", dark: "#A3ABB5")
 
     // Estados. El aviso es ocre/amarillo y no naranja, para no confundirlo
     // con el color de Claude.
-    static let accent = Color.accentColor                                // Enlaces y acciones
-    static let success = dynamic(light: "#1E7F3A", dark: "#6FD08C")     // En vivo
+    static let accent = dynamic(light: "#2563EB", dark: "#6EA0FF")      // Azul de terminal (acciones)
+    static let success = dynamic(light: "#1E7F3A", dark: "#6FD08C")     // LIVE
     static let warning = dynamic(light: "#9A6700", dark: "#FFD43B")     // 70 %+
     static let error = dynamic(light: "#CF222E", dark: "#FF7B72")       // 90 %+
 
-    // Color de cada proveedor en su tarjeta y sus barras
+    // Color de cada proveedor en su sección y sus barras
     static let claude = dynamic(light: "#C15F3C", dark: "#F0A07F")      // Arcilla de Anthropic
     static let gemini = dynamic(light: "#7B4FE0", dark: "#C3A6FF")      // Violeta de Gemini
 
-    private static func dynamic(light: String, dark: String) -> Color {
-        dynamic(light: NSColor(hex: light), dark: NSColor(hex: dark))
+    // Tipografía monoespaciada: JetBrains Mono si está instalada, si no la del sistema.
+    static func monospaced(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        if NSFont(name: "JetBrains Mono", size: size) != nil {
+            return Font.custom("JetBrains Mono", size: size).weight(weight)
+        }
+        return Font.system(size: size, weight: weight, design: .monospaced)
     }
 
-    private static func dynamic(light: NSColor, dark: NSColor) -> Color {
-        Color(NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+    private static func dynamic(light: String, dark: String) -> Color {
+        let lightColor = NSColor(hex: light)
+        let darkColor = NSColor(hex: dark)
+        return Color(NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
         })
     }
 }

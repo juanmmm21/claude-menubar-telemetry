@@ -12,12 +12,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingController = NSHostingController(rootView: contentView)
 
         // El popover toma el alto natural de la vista (sin hueco abajo) y lo
-        // sigue al abrir o cerrar Modelos y Ajustes, manteniendo la flecha
+        // sigue al abrir o cerrar MODELOS y CONFIG, manteniendo la flecha
         // pegada al icono. En macOS 12 no existe esta opción: alto fijo.
         if #available(macOS 13.0, *) {
             hostingController.sizingOptions = [.preferredContentSize]
         } else {
-            popover.contentSize = NSSize(width: 360, height: 600)
+            popover.contentSize = NSSize(width: 380, height: 600)
         }
 
         // Sin apariencia fija: el panel es opaco y sigue el modo claro u oscuro
