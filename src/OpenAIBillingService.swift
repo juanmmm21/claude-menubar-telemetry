@@ -42,6 +42,10 @@ final class OpenAIBillingService: NSObject, WKNavigationDelegate, WKUIDelegate {
     private var pendingCompletion: ((OpenAIBalanceState) -> Void)?
     private var pollTimer: Timer?
     private var pollAttempts = 0
+    // Última lectura del saldo en esta carga: solo se da por buena cuando dos
+    // lecturas seguidas coinciden, por si la página pinta antes una cifra
+    // provisional.
+    private var lastReading: OpenAIBalance?
 
     private var loginWindow: NSWindow?
     private var loginWebView: WKWebView?
@@ -107,6 +111,7 @@ final class OpenAIBillingService: NSObject, WKNavigationDelegate, WKUIDelegate {
     private func startPolling(_ webView: WKWebView) {
         pollTimer?.invalidate()
         pollAttempts = 0
+        lastReading = nil
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self, weak webView] _ in
             guard let self = self, let webView = webView else { return }
             self.pollAttempts += 1
@@ -122,10 +127,17 @@ final class OpenAIBillingService: NSObject, WKNavigationDelegate, WKUIDelegate {
                 // Respuesta tardía de una lectura que ya terminó.
                 guard webView === self.backgroundWebView else { return }
                 let text = result as? String ?? ""
-                if let balance = OpenAIBillingPageParser.parse(text) {
+                let reading = OpenAIBillingPageParser.parse(text)
+                if let balance = reading, balance == self.lastReading {
                     self.finish(.loaded(balance))
                 } else if self.pollAttempts >= 50 {
-                    self.finish(.unavailable("No se pudo leer el saldo de platform.openai.com"))
+                    if let balance = reading ?? self.lastReading {
+                        self.finish(.loaded(balance))
+                    } else {
+                        self.finish(.unavailable("No se pudo leer el saldo de platform.openai.com"))
+                    }
+                } else if reading != nil {
+                    self.lastReading = reading
                 }
             }
         }
@@ -241,8 +253,17 @@ final class OpenAIBillingService: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 }
 
-// Saca el saldo del texto de la página de facturación: la etiqueta
-// "Credit balance" seguida del importe, en la misma línea o en las siguientes.
+// Saca el saldo del texto de la página de facturación. La página pinta:
+//
+//     Pay as you go
+//     API credit balance
+//     $4.01
+//     Auto-reload is OFF
+//     When your credit balance reaches $0, your API requests will stop working…
+//
+// Así que se busca una línea que sea solo la etiqueta ("API credit balance")
+// y, justo debajo, una línea que sea solo el importe. Las frases del aviso
+// también dicen "credit balance" y "$0", pero no son ni una cosa ni la otra.
 enum OpenAIBillingPageParser {
     static func parse(_ text: String) -> OpenAIBalance? {
         let lines = text
@@ -250,25 +271,31 @@ enum OpenAIBillingPageParser {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
 
-        guard let labelIndex = lines.firstIndex(where: isBalanceLabel) else { return nil }
-        for line in lines[labelIndex..<min(labelIndex + 4, lines.count)] {
-            if let balance = amount(in: line) {
-                return balance
+        for (index, line) in lines.enumerated() where isBalanceLabel(line) {
+            // La etiqueta y el importe pueden venir separados por el icono de
+            // información u otra línea corta, así que se miran las dos siguientes.
+            for candidate in lines.dropFirst(index + 1).prefix(2) {
+                if let balance = amount(in: candidate) {
+                    return balance
+                }
             }
         }
         return nil
     }
 
+    // "API credit balance", "Credit balance". Una frase que solo menciona el
+    // saldo es bastante más larga.
     private static func isBalanceLabel(_ line: String) -> Bool {
         let lower = line.lowercased()
-        return lower.contains("credit balance") || lower.contains("saldo de crédito")
+        return lower.count <= 30 && lower.hasSuffix("credit balance")
     }
 
     // "$4.83", "$1,234.50", "-$0.12", "$-0.12", "€10.00"
     private static let amountPattern = #"([-−]?)\s*([$€£])\s?([-−]?)(\d[\d,]*(?:\.\d+)?)"#
 
+    // La línea tiene que ser el importe y nada más.
     private static func amount(in line: String) -> OpenAIBalance? {
-        guard let regex = try? NSRegularExpression(pattern: amountPattern),
+        guard let regex = try? NSRegularExpression(pattern: "^" + amountPattern + "$"),
               let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
               let whole = Range(match.range, in: line),
               let digits = Range(match.range(at: 4), in: line),
