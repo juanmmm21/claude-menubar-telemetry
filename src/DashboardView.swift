@@ -8,10 +8,11 @@ struct DashboardView: View {
     // Live timer to refresh countdowns and checks every second without scanning logs
     let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
-    // State to trigger UI redraw on timer tick (y parpadeo del cursor de la cabecera)
-    @State private var tick: Bool = false
+    // Hora de referencia de las cuentas atrás: al cambiar cada segundo, las
+    // vuelve a pintar.
+    @State private var now = Date()
 
-    // Cajones plegables: el detalle por modelo y los ajustes no hacen falta
+    // Secciones plegables: el detalle por modelo y los ajustes no hacen falta
     // para el vistazo rápido.
     @State private var showModels: Bool = false
     @State private var showSettings: Bool = false
@@ -20,59 +21,30 @@ struct DashboardView: View {
         VStack(spacing: 0) {
             headerView
 
-            Rectangle()
-                .fill(Theme.border)
-                .frame(height: 1)
+            separator
 
             // Sin ScrollView: el panel mide exactamente lo que ocupa el
             // contenido y AppDelegate hace que el popover tome ese tamaño. Para
-            // que nunca se salga de la pantalla, los cajones son excluyentes y
-            // las tablas enseñan solo los modelos con más uso.
-            VStack(alignment: .leading, spacing: 18) {
+            // que nunca se salga de la pantalla, las secciones plegables son
+            // excluyentes y las tablas enseñan solo los modelos con más uso.
+            VStack(alignment: .leading, spacing: 12) {
                 claudeSection
                 geminiSection
-
-                DashedLine()
-
-                VStack(alignment: .leading, spacing: 10) {
-                    drawerToggle(title: "MODELOS", isOpen: showModels) {
-                        showModels.toggle()
-                        if showModels { showSettings = false }
-                    }
-                    if showModels {
-                        modelsDrawer
-                    }
-
-                    drawerToggle(title: "CONFIG", isOpen: showSettings) {
-                        showSettings.toggle()
-                        if showSettings { showModels = false }
-                    }
-                    if showSettings {
-                        settingsDrawer
-                    }
-                }
+                foldableSections
             }
-            .padding(16)
+            .padding(14)
 
-            Rectangle()
-                .fill(Theme.border)
-                .frame(height: 1)
+            separator
 
             footerView
         }
-        .frame(width: 380)
+        .frame(width: 360)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(
-            ZStack {
-                VisualEffectBackground(material: .hudWindow)
-                Theme.glassTint
-            }
-            .ignoresSafeArea()
-        )
+        .background(Theme.background.ignoresSafeArea())
         .foregroundColor(Theme.textPrimary)
-        .onReceive(timer) { _ in
-            tick.toggle() // Forces redraw of countdown strings
+        .onReceive(timer) { date in
+            now = date
             manager.updateBlockStateIfNeeded() // Checks timeline for real-time status transitions
         }
     }
@@ -80,24 +52,13 @@ struct DashboardView: View {
     // MARK: - Cabecera
 
     private var headerView: some View {
-        HStack {
-            HStack(spacing: 8) {
-                HStack(spacing: 0) {
-                    Text(">")
-                    Text("_")
-                        .opacity(tick ? 1 : 0.15)
-                }
-                .foregroundColor(Theme.accent)
-                .font(Theme.monospaced(14, weight: .bold))
-
-                Text("AI_TELEMETRY")
-                    .font(Theme.monospaced(13, weight: .bold))
-                    .foregroundColor(Theme.textPrimary)
-            }
+        HStack(spacing: 8) {
+            Text("Uso de IA")
+                .font(.system(size: 14, weight: .semibold))
 
             Spacer()
 
-            statusPill(overallStatus, size: 10)
+            statusPill(overallStatus)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -106,18 +67,18 @@ struct DashboardView: View {
     // MARK: - Claude
 
     private var claudeSection: some View {
-        providerSection("CLAUDE", color: Theme.claude, status: claudeStatus, comment: claudeScopeComment) {
+        providerCard("Claude", color: Theme.claude, status: claudeStatus, caption: claudeScopeComment) {
             meterRow(
-                "SESION_5H",
+                "Sesión (5 h)",
                 percent: Double(displaySessionPercent),
-                trailing: sessionResetShort,
+                caption: sessionResetCaption,
                 color: Theme.claude
             )
-            DashedLine()
+            rowDivider
             meterRow(
-                "SEMANA",
+                "Semana",
                 percent: weeklyAllPercent,
-                trailing: manager.accountUsage?.sevenDay?.resetsAt.map { shortReset($0) } ?? "dom 08:00",
+                caption: manager.accountUsage?.sevenDay?.resetsAt.map { resetCaption($0) },
                 color: Theme.claude
             )
             claudeModelWindows
@@ -132,30 +93,30 @@ struct DashboardView: View {
     private var claudeModelWindows: some View {
         if let modelWindows = manager.accountUsage?.modelWindows, !modelWindows.isEmpty {
             ForEach(modelWindows) { scoped in
-                DashedLine()
+                rowDivider
                 meterRow(
-                    "SEM_" + snakeCase(scoped.displayName, dropping: "CLAUDE"),
+                    "Semana · " + dropBrand(scoped.displayName, "Claude"),
                     percent: min(scoped.window.utilizationPercent, 100.0),
-                    trailing: scoped.window.resetsAt.map { shortReset($0) } ?? "—",
+                    caption: scoped.window.resetsAt.map { resetCaption($0) },
                     color: Theme.claude
                 )
             }
         } else {
-            DashedLine()
+            rowDivider
             valueRow(
-                "FABLE_7D",
-                value: "\(manager.fableRequests) prompts · \(formatNumber(manager.fableInputTokens + manager.fableOutputTokens)) tok"
+                "Fable · 7 días",
+                value: "\(manager.fableRequests) prompts · \(formatNumber(manager.fableInputTokens + manager.fableOutputTokens)) tokens"
             )
         }
     }
 
     // Créditos de uso (con lo que se paga Fable al agotar la cuota del plan)
-    // y saldo prepago. Sin dato en vivo no se pinta nada: el comentario de la
-    // sección ya explica por qué.
+    // y saldo prepago. Sin dato en vivo no se pinta nada: el subtítulo de la
+    // tarjeta ya explica por qué.
     @ViewBuilder
     private var claudeCreditRows: some View {
         if let credits = manager.accountUsage?.credits {
-            DashedLine()
+            rowDivider
             if credits.isEnabled {
                 let used = credits.usedMinorUnits ?? 0
                 let usedText = formatMoney(used, currency: credits.currencyCode)
@@ -163,48 +124,48 @@ struct DashboardView: View {
                 if let limit = credits.monthlyLimitMinorUnits {
                     let pct = min(credits.utilizationPercent ?? percentage(used, of: limit), 100.0)
                     valueRow(
-                        "CREDITOS",
-                        value: "\(usedText) / \(formatMoney(limit, currency: credits.currencyCode))",
-                        valueColor: barColor(for: pct, base: Theme.textPrimary)
+                        "Créditos",
+                        value: "\(usedText) de \(formatMoney(limit, currency: credits.currencyCode))",
+                        valueColor: levelColor(for: pct, base: Theme.textPrimary)
                     )
                 } else {
-                    valueRow("CREDITOS", value: "\(usedText) · sin tope")
+                    valueRow("Créditos", value: "\(usedText) · sin tope")
                 }
             } else {
-                valueRow("CREDITOS", value: creditsDisabledLabel(credits.disabledReason), valueColor: Theme.warning)
+                valueRow("Créditos", value: creditsDisabledLabel(credits.disabledReason), valueColor: Theme.warning)
             }
         }
 
         if let prepaid = manager.accountUsage?.prepaid {
-            DashedLine()
-            valueRow("PREPAGO", value: formatMoney(prepaid.balanceMinorUnits, currency: prepaid.currencyCode))
+            rowDivider
+            valueRow("Saldo prepago", value: formatMoney(prepaid.balanceMinorUnits, currency: prepaid.currencyCode))
         }
     }
 
     // MARK: - Gemini
 
     private var geminiSection: some View {
-        providerSection("GEMINI", color: Theme.gemini, status: geminiStatus, comment: geminiScopeComment) {
+        providerCard("Gemini", color: Theme.gemini, status: geminiStatus, caption: geminiScopeComment) {
             geminiAppRows
 
             // Gemini CLI solo aparece si se usa: cuota por modelo si hay
             // sesión del CLI, y actividad local si hay logs.
             if let models = manager.geminiUsage?.models, !models.isEmpty {
                 ForEach(models) { model in
-                    DashedLine()
+                    rowDivider
                     meterRow(
-                        "CLI_" + snakeCase(GeminiModelNames.displayName(model.modelId), dropping: "GEMINI"),
+                        "CLI · " + dropBrand(GeminiModelNames.displayName(model.modelId), "Gemini"),
                         percent: model.usedPercent,
-                        trailing: model.resetsAt.map { shortReset($0) } ?? "—",
+                        caption: model.resetsAt.map { resetCaption($0) },
                         color: Theme.gemini
                     )
                 }
             }
             if manager.geminiLocal.prompts7d > 0 {
-                DashedLine()
+                rowDivider
                 valueRow(
-                    "CLI_24H",
-                    value: "\(manager.geminiLocal.prompts24h) prompts · \(formatNumber(manager.geminiLocal.tokens24h)) tok"
+                    "CLI · últimas 24 h",
+                    value: "\(manager.geminiLocal.prompts24h) prompts · \(formatNumber(manager.geminiLocal.tokens24h)) tokens"
                 )
             }
         }
@@ -217,102 +178,137 @@ struct DashboardView: View {
         switch manager.geminiApp {
         case .loaded(let usage):
             meterRow(
-                "SESION_5H",
+                "Sesión (5 h)",
                 percent: usage.current?.usedPercent ?? 0,
-                trailing: geminiResetLabel(usage.current),
+                caption: geminiResetCaption(usage.current),
                 color: Theme.gemini
             )
-            DashedLine()
+            rowDivider
             meterRow(
-                "SEMANA",
+                "Semana",
                 percent: usage.weekly?.usedPercent ?? 0,
-                trailing: geminiResetLabel(usage.weekly),
+                caption: geminiResetCaption(usage.weekly),
                 color: Theme.gemini
             )
         case .needsLogin:
             Button(action: {
                 manager.connectGoogleAccount()
             }) {
-                valueRow("CUENTA_GOOGLE", value: "conectar →", valueColor: Theme.accent)
+                valueRow("Cuenta de Google", value: "Conectar →", valueColor: Theme.accent)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         case .unknown:
-            valueRow("APP_GEMINI", value: "consultando…", valueColor: Theme.textSecondary)
+            valueRow("App de Gemini", value: "Consultando…", valueColor: Theme.textSecondary)
         case .unavailable:
-            valueRow("APP_GEMINI", value: "sin dato", valueColor: Theme.textSecondary)
+            valueRow("App de Gemini", value: "Sin datos", valueColor: Theme.textSecondary)
         }
     }
 
-    // MARK: - Cajones
+    // MARK: - Secciones plegables
 
-    private var modelsDrawer: some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private var foldableSections: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            foldToggle("Modelos", systemImage: "list.bullet", isOpen: showModels) {
+                showModels.toggle()
+                if showModels { showSettings = false }
+            }
+            if showModels {
+                modelsSection
+            }
+
+            rowDivider
+
+            foldToggle("Ajustes", systemImage: "gearshape", isOpen: showSettings) {
+                showSettings.toggle()
+                if showSettings { showModels = false }
+            }
+            if showSettings {
+                settingsSection
+            }
+        }
+        .card()
+    }
+
+    private var modelsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
             modelTable(
-                title: "CLAUDE · histórico",
+                title: "Claude · histórico",
                 rows: manager.modelUsageBreakdown,
                 color: Theme.claude
             ) { $0.contains("Fable") }
 
             if !manager.geminiLocal.models7d.isEmpty {
                 modelTable(
-                    title: "GEMINI CLI · 7 días",
+                    title: "Gemini CLI · 7 días",
                     rows: manager.geminiLocal.models7d,
                     color: Theme.gemini
                 ) { $0.contains("Pro") }
             }
         }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
     }
 
-    private var settingsDrawer: some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private var settingsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
             if manager.launchAtLoginSupported {
-                Toggle(isOn: $manager.launchAtLoginEnabled) {
-                    Text("INICIAR_CON_MACOS")
-                        .font(Theme.monospaced(10, weight: .bold))
-                        .foregroundColor(Theme.textPrimary)
+                HStack {
+                    Text("Iniciar con macOS")
+                        .font(.system(size: 13))
+                    Spacer()
+                    Toggle("Iniciar con macOS", isOn: $manager.launchAtLoginEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
                 }
-                .toggleStyle(.checkbox)
-
-                DashedLine()
             }
 
             if manager.geminiApp != .needsLogin {
                 Button(action: {
                     manager.disconnectGoogleAccount()
                 }) {
-                    Text("DESCONECTAR_GOOGLE")
-                        .font(Theme.monospaced(10, weight: .bold))
+                    Text("Desconectar cuenta de Google")
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundColor(Theme.error)
                 }
                 .buttonStyle(.plain)
-
-                DashedLine()
             }
 
-            Text("// límites de respaldo de Claude: solo se usan sin dato en vivo de la cuenta")
-                .font(Theme.monospaced(8))
-                .foregroundColor(Theme.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
-            stepperRow(title: "SESION_5H", value: $manager.fiveHourLimit, step: 5, range: 10...200)
-            stepperRow(title: "SEMANA", value: $manager.weeklyLimit, step: 100, range: 200...5000)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Límites de respaldo de Claude: solo se usan cuando no hay dato en vivo de la cuenta.")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                stepperRow("Sesión (5 h)", value: $manager.fiveHourLimit, step: 5, range: 10...200)
+                stepperRow("Semana", value: $manager.weeklyLimit, step: 100, range: 200...5000)
+            }
         }
-        .padding(12)
-        .glassCard()
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
     }
 
-    private func drawerToggle(title: String, isOpen: Bool, action: @escaping () -> Void) -> some View {
+    private func foldToggle(_ title: String, systemImage: String, isOpen: Bool, action: @escaping () -> Void) -> some View {
         Button(action: {
             withAnimation(.easeInOut(duration: 0.2)) {
                 action()
             }
         }) {
-            HStack {
-                Text(isOpen ? "[-] \(title)" : "[+] \(title)")
-                    .font(Theme.monospaced(10, weight: .bold))
-                    .foregroundColor(Theme.accent)
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textSecondary)
+                    .frame(width: 16)
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
                 Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.textSecondary)
+                    .rotationEffect(.degrees(isOpen ? 90 : 0))
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -331,34 +327,33 @@ struct DashboardView: View {
                     manager.refresh()
                 }) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(Theme.textSecondary)
+                        .frame(width: 14, height: 14)
                 }
                 .buttonStyle(.plain)
+                .help("Actualizar")
             }
 
-            Text("SYNC \(formatTime(manager.lastRefreshed))")
-                .font(Theme.monospaced(9))
-                .foregroundColor(Theme.textMuted)
+            Text("Actualizado a las \(formatTime(manager.lastRefreshed))")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.textSecondary)
 
             Spacer()
 
             Button(action: {
                 NSApplication.shared.terminate(nil)
             }) {
-                Text("QUIT")
-                    .font(Theme.monospaced(10, weight: .bold))
-                    .foregroundColor(Theme.error)
-                    .padding(.horizontal, 8)
+                Text("Salir")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .background(
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(Theme.error.opacity(0.08))
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(Theme.border, lineWidth: 1)
                     )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5)
-                            .stroke(Theme.error.opacity(0.45), lineWidth: 1)
-                    )
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -368,136 +363,152 @@ struct DashboardView: View {
 
     // MARK: - Piezas reutilizables
 
-    private func providerSection<Content: View>(_ name: String,
-                                                color: Color,
-                                                status: StatusBadge,
-                                                comment: String,
-                                                @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(">")
-                        .foregroundColor(color)
-                    Text(name)
-                        .foregroundColor(Theme.textPrimary)
-                    Spacer()
-                    statusPill(status, size: 9)
-                }
-                .font(Theme.monospaced(12, weight: .bold))
+    private var separator: some View {
+        Rectangle()
+            .fill(Theme.border)
+            .frame(height: 1)
+    }
 
-                Text("// \(comment)")
-                    .font(Theme.monospaced(9))
-                    .foregroundColor(Theme.textMuted)
+    private var rowDivider: some View {
+        Rectangle()
+            .fill(Theme.border)
+            .frame(height: 1)
+            .padding(.horizontal, 12)
+    }
+
+    private func providerCard<Content: View>(_ name: String,
+                                             color: Color,
+                                             status: StatusBadge,
+                                             caption: String,
+                                             @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 9, height: 9)
+                    Text(name)
+                        .font(.system(size: 14, weight: .semibold))
+                    Spacer()
+                    statusPill(status)
+                }
+
+                Text(caption)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 11)
+            .padding(.bottom, 10)
 
-            VStack(alignment: .leading, spacing: 0) {
-                content()
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .glassCard()
+            rowDivider
+
+            content()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
     }
 
-    private func statusPill(_ status: StatusBadge, size: CGFloat) -> some View {
+    private func statusPill(_ status: StatusBadge) -> some View {
         HStack(spacing: 5) {
             Circle()
                 .fill(status.color)
-                .frame(width: size - 3, height: size - 3)
+                .frame(width: 6, height: 6)
             Text(status.label)
-                .font(Theme.monospaced(size, weight: .bold))
-                .foregroundColor(status.color)
+                .font(.system(size: 11, weight: .semibold))
         }
-        .padding(.horizontal, 7)
+        .foregroundColor(status.color)
+        .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(
-            Capsule().fill(status.color.opacity(0.10))
-        )
-        .overlay(
-            Capsule().stroke(status.color.opacity(0.35), lineWidth: 1)
+            Capsule().fill(status.color.opacity(0.14))
         )
     }
 
-    // Una línea por límite: etiqueta, barra, % y cuándo se restablece. El %
-    // va en blanco y solo toma color al pasar del 70 %, cuando hay que avisar.
-    private func meterRow(_ label: String, percent: Double, trailing: String, color: Color) -> some View {
-        let tint = barColor(for: percent, base: color)
-        let percentColor = barColor(for: percent, base: Theme.textPrimary)
+    // Un límite: nombre y % arriba, la barra entera debajo y cuándo se
+    // renueva. El % va en el color del texto y solo cambia (con un icono de
+    // aviso, para no depender del color) desde el 70 %.
+    private func meterRow(_ label: String, percent: Double, caption: String?, color: Color) -> some View {
+        let isHigh = percent >= 70
 
-        return HStack(spacing: 10) {
-            Text(label)
-                .font(Theme.monospaced(10, weight: .bold))
-                .foregroundColor(Theme.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(width: 100, alignment: .leading)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(label)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-            UsageBar(percent: percent, color: tint)
+                Spacer(minLength: 8)
 
-            Text("\(Int(percent))%")
-                .font(Theme.monospaced(11, weight: .bold))
-                .foregroundColor(percentColor)
-                .frame(width: 34, alignment: .trailing)
+                if isHigh {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(levelColor(for: percent, base: color))
+                }
+                Text("\(Int(percent)) %")
+                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                    .foregroundColor(levelColor(for: percent, base: Theme.textPrimary))
+            }
 
-            Text(trailing)
-                .font(Theme.monospaced(9))
-                .foregroundColor(Theme.textSecondary)
-                .lineLimit(1)
-                .frame(width: 58, alignment: .trailing)
+            UsageBar(percent: percent, color: levelColor(for: percent, base: color))
+
+            if let caption = caption {
+                Text(caption)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .lineLimit(1)
+            }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.vertical, 10)
     }
 
     private func valueRow(_ label: String, value: String, valueColor: Color = Theme.textPrimary) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
-                .font(Theme.monospaced(10, weight: .bold))
-                .foregroundColor(Theme.textPrimary)
+                .font(.system(size: 13))
                 .fixedSize()
 
-            DashedLine(dash: [1, 3])
+            Spacer(minLength: 8)
 
             Text(value)
-                .font(Theme.monospaced(10, weight: .bold))
+                .font(.system(size: 13, weight: .semibold).monospacedDigit())
                 .foregroundColor(valueColor)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .layoutPriority(1)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.vertical, 10)
     }
 
     private func modelTable(title: String,
                             rows: [ModelUsage],
                             color: Color,
                             highlight: @escaping (String) -> Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 7, height: 7)
                 Text(title)
-                    .foregroundColor(color)
+                    .foregroundColor(Theme.textPrimary)
                 Spacer()
-                Text("PROMPTS")
+                Text("Prompts")
                     .frame(width: 60, alignment: .trailing)
-                Text("TOKENS")
+                Text("Tokens")
                     .frame(width: 60, alignment: .trailing)
             }
-            .font(Theme.monospaced(9, weight: .bold))
+            .font(.system(size: 11, weight: .semibold))
             .foregroundColor(Theme.textSecondary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
 
             if rows.isEmpty {
-                DashedLine()
                 Text("Sin actividad en los logs.")
-                    .font(Theme.monospaced(10))
-                    .foregroundColor(Theme.textMuted)
-                    .padding(12)
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textSecondary)
             } else {
                 ForEach(Array(rows.prefix(Self.maxModelRows))) { usage in
-                    DashedLine()
                     HStack {
                         Text(usage.modelName)
                             .lineLimit(1)
@@ -506,51 +517,24 @@ struct DashboardView: View {
                         Text("\(usage.requestsCount)")
                             .frame(width: 60, alignment: .trailing)
                         Text(formatNumber(usage.inputTokens + usage.outputTokens))
+                            .fontWeight(highlight(usage.modelName) ? .semibold : .regular)
                             .frame(width: 60, alignment: .trailing)
-                            .foregroundColor(highlight(usage.modelName) ? color : Theme.textPrimary)
                     }
-                    .font(Theme.monospaced(10))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
+                    .font(.system(size: 12).monospacedDigit())
                 }
             }
         }
-        .glassCard()
     }
 
-    private func stepperRow(title: String, value: Binding<Int>, step: Int, range: ClosedRange<Int>) -> some View {
-        HStack {
+    private func stepperRow(_ title: String, value: Binding<Int>, step: Int, range: ClosedRange<Int>) -> some View {
+        HStack(spacing: 8) {
             Text(title)
-                .font(Theme.monospaced(10))
-                .foregroundColor(Theme.textSecondary)
+                .font(.system(size: 13))
             Spacer()
-            HStack(spacing: 8) {
-                Button("-") {
-                    if value.wrappedValue - step >= range.lowerBound {
-                        value.wrappedValue -= step
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(Theme.monospaced(12, weight: .bold))
-                .frame(width: 16, height: 16)
-                .background(Theme.border)
-                .cornerRadius(3)
-
-                Text("\(value.wrappedValue)")
-                    .font(Theme.monospaced(10, weight: .bold))
-                    .frame(width: 40, alignment: .center)
-
-                Button("+") {
-                    if value.wrappedValue + step <= range.upperBound {
-                        value.wrappedValue += step
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(Theme.monospaced(12, weight: .bold))
-                .frame(width: 16, height: 16)
-                .background(Theme.border)
-                .cornerRadius(3)
-            }
+            Text("\(value.wrappedValue) prompts")
+                .font(.system(size: 13, weight: .semibold).monospacedDigit())
+            Stepper(title, value: value, in: range, step: step)
+                .labelsHidden()
         }
     }
 
@@ -559,37 +543,42 @@ struct DashboardView: View {
 
     // MARK: - Estado
 
+    private static let limitLabel = "Límite alcanzado"
+    private static let highUsageLabel = "Uso alto"
+    private static let liveLabel = "En vivo"
+    private static let estimatedLabel = "Estimado"
+
     private var claudeStatus: StatusBadge {
-        if isSessionLimitReached { return ("RATE_LIMITED", Theme.error) }
-        if displaySessionPercent >= 90 { return ("HIGH_USAGE", Theme.warning) }
-        return hasLiveSessionWindow ? ("LIVE", Theme.success) : ("LOGS_ONLY", Theme.textSecondary)
+        if isSessionLimitReached { return (Self.limitLabel, Theme.error) }
+        if displaySessionPercent >= 90 { return (Self.highUsageLabel, Theme.warning) }
+        return hasLiveSessionWindow ? (Self.liveLabel, Theme.success) : (Self.estimatedLabel, Theme.textSecondary)
     }
 
     private var geminiStatus: StatusBadge {
-        if isGeminiLimitReached { return ("RATE_LIMITED", Theme.error) }
-        if (geminiMaxUsedPercent ?? 0) >= 90 { return ("HIGH_USAGE", Theme.warning) }
+        if isGeminiLimitReached { return (Self.limitLabel, Theme.error) }
+        if (geminiMaxUsedPercent ?? 0) >= 90 { return (Self.highUsageLabel, Theme.warning) }
         switch manager.geminiApp {
         case .loaded:
-            return ("LIVE", Theme.success)
+            return (Self.liveLabel, Theme.success)
         case .needsLogin:
-            return ("LOGIN", Theme.warning)
+            return ("Sin conectar", Theme.warning)
         case .unknown, .unavailable:
-            return manager.geminiUsage != nil ? ("LIVE", Theme.success) : ("NO_DATA", Theme.textSecondary)
+            return manager.geminiUsage != nil ? (Self.liveLabel, Theme.success) : ("Sin datos", Theme.textSecondary)
         }
     }
 
     // La cabecera resume lo peor de los dos.
     private var overallStatus: StatusBadge {
         let candidates = [claudeStatus, geminiStatus]
-        for label in ["RATE_LIMITED", "HIGH_USAGE"] {
+        for label in [Self.limitLabel, Self.highUsageLabel] {
             if let match = candidates.first(where: { $0.label == label }) {
                 return match
             }
         }
-        if candidates.contains(where: { $0.label == "LIVE" }) {
-            return ("LIVE", Theme.success)
+        if candidates.contains(where: { $0.label == Self.liveLabel }) {
+            return (Self.liveLabel, Theme.success)
         }
-        return ("LOGS_ONLY", Theme.textSecondary)
+        return (Self.estimatedLabel, Theme.textSecondary)
     }
 
     // MARK: - Helpers Claude
@@ -632,22 +621,22 @@ struct DashboardView: View {
     }
 
     // Con la ventana vacía no hay reset que contar.
-    private var sessionResetShort: String {
+    private var sessionResetCaption: String {
         guard hasMeaningfulSessionUsage || isSessionLimitReached,
               let resetDate = manager.nextResetDate else {
-            return "—"
+            return "Aún sin uso en esta ventana"
         }
-        return shortReset(resetDate)
+        return resetCaption(resetDate)
     }
 
     private var claudeScopeComment: String {
         if hasLiveSessionWindow {
-            return "dato real de tu cuenta · desktop + web + cli"
+            return "Datos reales de tu cuenta · escritorio, web y CLI"
         }
         if let reason = manager.liveQuotaUnavailableReason {
-            return "aprox. por logs del CLI · \(reason)"
+            return "Aproximado por los logs del CLI · \(reason)"
         }
-        return "aprox. por logs del CLI"
+        return "Aproximado por los logs del CLI"
     }
 
     // Motivos que devuelve Anthropic cuando los créditos no están operativos.
@@ -691,60 +680,56 @@ struct DashboardView: View {
     private var geminiScopeComment: String {
         switch manager.geminiApp {
         case .loaded(let usage):
-            let parts = ["dato real de tu cuenta de Google", usage.planName.map { "plan \($0)" }].compactMap { $0 }
+            let parts = ["Datos reales de tu cuenta de Google", usage.planName.map { "plan \($0)" }].compactMap { $0 }
             return parts.joined(separator: " · ")
         case .needsLogin:
-            return "conecta tu cuenta de Google una vez para ver el uso de la app"
+            return "Conecta tu cuenta de Google una vez para ver el uso de la app"
         case .unavailable(let reason):
             return reason
         case .unknown:
-            return "consultando gemini.google.com/usage…"
+            return "Consultando gemini.google.com/usage…"
         }
     }
 
-    // Hora o cuenta atrás si se pudo interpretar; si no, el texto de Google.
-    private func geminiResetLabel(_ window: GeminiAppWindow?) -> String {
+    // Cuenta atrás o día y hora si se pudo interpretar; si no, el texto de Google.
+    private func geminiResetCaption(_ window: GeminiAppWindow?) -> String? {
         if let date = window?.resetsAt {
-            return shortReset(date)
+            return resetCaption(date)
         }
-        guard let text = window?.resetText else { return "—" }
-        return text.split(separator: " ").suffix(1).joined()
+        return window?.resetText
     }
 
     // MARK: - Formato
 
-    private func barColor(for percent: Double, base: Color) -> Color {
+    private func levelColor(for percent: Double, base: Color) -> Color {
         if percent >= 90 { return Theme.error }
         if percent >= 70 { return Theme.warning }
         return base
     }
 
-    // "Claude Opus 5" -> "OPUS_5" (sin el prefijo de la marca, que ya da la
-    // sección), "Gemini 2.5 Flash Lite" -> "2.5_FLASH_LITE".
-    private func snakeCase(_ name: String, dropping brand: String) -> String {
-        var words = name.uppercased().split(whereSeparator: { $0 == " " || $0 == "-" })
-        if words.count > 1, words.first == Substring(brand) {
-            words.removeFirst()
-        }
-        return words.joined(separator: "_")
+    // "Claude Opus 5" -> "Opus 5": la marca ya la da la tarjeta.
+    private func dropBrand(_ name: String, _ brand: String) -> String {
+        let prefix = brand + " "
+        return name.hasPrefix(prefix) ? String(name.dropFirst(prefix.count)) : name
     }
 
-    // Menos de un día: cuenta atrás ("2h 10m"). Más: día y hora ("dom 08:00").
-    private func shortReset(_ date: Date) -> String {
-        let diff = date.timeIntervalSince(Date())
-        guard diff > 0 else { return "ahora" }
+    // Menos de un día: cuenta atrás ("en 2 h 10 min"). Más: día y hora
+    // ("el domingo a las 08:00").
+    private func resetCaption(_ date: Date) -> String {
+        let diff = date.timeIntervalSince(now)
+        guard diff > 0 else { return "Se renueva ahora" }
 
         let mins = Int(ceil(diff / 60.0))
         if mins >= 24 * 60 {
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "es_ES")
-            formatter.dateFormat = "E HH:mm"
-            return formatter.string(from: date)
+            formatter.dateFormat = "EEEE 'a las' HH:mm"
+            return "Se renueva el \(formatter.string(from: date))"
         }
         if mins >= 60 {
-            return "\(mins / 60)h \(mins % 60)m"
+            return "Se renueva en \(mins / 60) h \(mins % 60) min"
         }
-        return "\(mins)m"
+        return "Se renueva en \(mins) min"
     }
 
     private func formatNumber(_ num: Int) -> String {
@@ -775,52 +760,34 @@ struct DashboardView: View {
 
     private func formatTime(_ date: Date) -> String {
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
+        formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
     }
 }
 
-// Panel de cristal: relleno blanco muy tenue y borde fino redondeado.
-private struct GlassCard: ViewModifier {
+// Tarjeta: superficie opaca con borde fino redondeado.
+private struct Card: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Theme.cardBackground)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Theme.card)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(Theme.border, lineWidth: 1)
             )
     }
 }
 
 private extension View {
-    func glassCard() -> some View {
-        modifier(GlassCard())
-    }
-}
-
-// Desenfoque del sistema detrás del popover. `.active` porque el popover no
-// siempre es la ventana activa y, si no, macOS lo pintaría opaco.
-struct VisualEffectBackground: NSViewRepresentable {
-    var material: NSVisualEffectView.Material
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        view.material = material
+    func card() -> some View {
+        modifier(Card())
     }
 }
 
 // Barra de uso continua sobre un carril visible: de un vistazo se ve cuánto
-// está lleno, sin tener que contar segmentos.
+// está lleno.
 struct UsageBar: View {
     let percent: Double // 0.0 to 100.0
     let color: Color
@@ -829,36 +796,19 @@ struct UsageBar: View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Theme.meterTrack)
+                    .fill(Theme.track)
                 Capsule()
                     .fill(color)
                     .frame(width: fillWidth(in: geo.size.width))
             }
         }
-        .frame(height: 8)
+        .frame(height: 6)
     }
 
     // Cualquier uso por encima de cero se ve, aunque sea como un punto.
     private func fillWidth(in totalWidth: CGFloat) -> CGFloat {
         let clamped = min(max(percent, 0), 100)
         guard clamped > 0 else { return 0 }
-        return max(totalWidth * CGFloat(clamped / 100), 8)
-    }
-}
-
-// Línea discontinua de separación; con un trazo corto sirve de "puntos guía"
-// entre una etiqueta y su valor.
-struct DashedLine: View {
-    var dash: [CGFloat] = [3, 3]
-
-    var body: some View {
-        GeometryReader { geo in
-            Path { path in
-                path.move(to: CGPoint(x: 0, y: 0.5))
-                path.addLine(to: CGPoint(x: geo.size.width, y: 0.5))
-            }
-            .stroke(Theme.border, style: StrokeStyle(lineWidth: 1, dash: dash))
-        }
-        .frame(height: 1)
+        return max(totalWidth * CGFloat(clamped / 100), 6)
     }
 }
