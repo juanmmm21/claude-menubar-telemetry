@@ -2,7 +2,7 @@
 
 A native macOS menu bar utility that shows, at a glance, how much of your **Claude** and **Gemini** plan limits you've used — the real account-wide figures, with when each limit resets.
 
-The interface is a translucent, frosted-glass popover with a terminal aesthetic: monospaced typography, `SNAKE_CASE` labels, segmented meters and terminal-like indicators.
+The interface is a translucent, frosted-glass popover with a terminal aesthetic: monospaced typography, `SNAKE_CASE` labels, solid usage bars and terminal-like indicators.
 
 <div align="center">
   <img src="docs/screenshot.png" width="380" alt="AI Telemetry popover showing Claude and Gemini session and weekly usage" />
@@ -27,10 +27,10 @@ The interface is a translucent, frosted-glass popover with a terminal aesthetic:
 
 ## Design Showcase
 
-The popover is a sheet of frosted glass: the system blur (`NSVisualEffectView`, HUD material), translucent panels with hairline borders, and the terminal look of its title bar everywhere — `SNAKE_CASE` labels, `>` section prompts, `// comments` for context and segmented meters. Accent colors:
-- **Claude**: Clay `#D97757`
-- **Gemini**: Violet `#A87FFB`
-- **OK / warning / limit**: `#59A869` / `#EDA200` / `#DB5860` (meters turn amber at 70% and red at 90%)
+The popover is a sheet of frosted glass: the system blur (`NSVisualEffectView`, HUD material), translucent panels with hairline borders, and the terminal look of its title bar everywhere — `SNAKE_CASE` labels, `>` section prompts, `// comments` for context and solid usage bars. Accent colors:
+- **Claude**: Light clay `#F0A07F`
+- **Gemini**: Light violet `#C3A6FF`
+- **OK / warning / limit**: `#6FD08C` / `#FFD43B` / `#FF7B72` (bars turn yellow at 70% and red at 90%; percentages stay white until then)
 
 Everything fits in one view, so both providers can be read at a glance when you click the Menu Bar icon (`terminal` system icon):
 1. **Header**: `>_ AI_TELEMETRY` with the worst state of the two providers. Each section also has its own badge: `● LIVE` (real account data), `● HIGH_USAGE` (90%+), `● RATE_LIMITED` (limit reached), `● LOGS_ONLY` (Claude without a live session, local estimate), `● LOGIN` (Gemini waiting for you to connect your Google account) or `● NO_DATA`.

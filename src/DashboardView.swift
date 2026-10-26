@@ -419,9 +419,11 @@ struct DashboardView: View {
         )
     }
 
-    // Una línea por límite: etiqueta, medidor, % y cuándo se restablece.
+    // Una línea por límite: etiqueta, barra, % y cuándo se restablece. El %
+    // va en blanco y solo toma color al pasar del 70 %, cuando hay que avisar.
     private func meterRow(_ label: String, percent: Double, trailing: String, color: Color) -> some View {
         let tint = barColor(for: percent, base: color)
+        let percentColor = barColor(for: percent, base: Theme.textPrimary)
 
         return HStack(spacing: 10) {
             Text(label)
@@ -431,11 +433,11 @@ struct DashboardView: View {
                 .truncationMode(.tail)
                 .frame(width: 100, alignment: .leading)
 
-            SegmentedMeter(percent: percent, color: tint, segments: 18)
+            UsageBar(percent: percent, color: tint)
 
             Text("\(Int(percent))%")
-                .font(Theme.monospaced(10, weight: .bold))
-                .foregroundColor(tint)
+                .font(Theme.monospaced(11, weight: .bold))
+                .foregroundColor(percentColor)
                 .frame(width: 34, alignment: .trailing)
 
             Text(trailing)
@@ -817,35 +819,30 @@ struct VisualEffectBackground: NSViewRepresentable {
     }
 }
 
-// Barra de uso por segmentos, como un medidor de terminal.
-struct SegmentedMeter: View {
+// Barra de uso continua sobre un carril visible: de un vistazo se ve cuánto
+// está lleno, sin tener que contar segmentos.
+struct UsageBar: View {
     let percent: Double // 0.0 to 100.0
     let color: Color
-    var segments: Int = 28
 
     var body: some View {
         GeometryReader { geo in
-            HStack(spacing: 2) {
-                ForEach(0..<segments, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(index < filledSegments ? color : Theme.meterTrack)
-                        .frame(width: segmentWidth(in: geo.size.width))
-                }
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Theme.meterTrack)
+                Capsule()
+                    .fill(color)
+                    .frame(width: fillWidth(in: geo.size.width))
             }
         }
         .frame(height: 8)
     }
 
-    // Cualquier uso por encima de cero enciende al menos un segmento.
-    private var filledSegments: Int {
+    // Cualquier uso por encima de cero se ve, aunque sea como un punto.
+    private func fillWidth(in totalWidth: CGFloat) -> CGFloat {
         let clamped = min(max(percent, 0), 100)
-        let filled = Int((clamped / 100 * Double(segments)).rounded())
-        return clamped > 0 ? max(filled, 1) : 0
-    }
-
-    private func segmentWidth(in totalWidth: CGFloat) -> CGFloat {
-        let spacing = CGFloat(segments - 1) * 2
-        return max((totalWidth - spacing) / CGFloat(segments), 1)
+        guard clamped > 0 else { return 0 }
+        return max(totalWidth * CGFloat(clamped / 100), 8)
     }
 }
 

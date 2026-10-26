@@ -11,22 +11,24 @@ struct Theme {
     static let glassTint = Color.black.opacity(0.62)
     static let cardBackground = Color.white.opacity(0.05) // Paneles
     static let border = Color.white.opacity(0.10)         // Bordes y separadores
-    static let meterTrack = Color.white.opacity(0.08)     // Segmentos apagados
+    static let meterTrack = Color.white.opacity(0.16)     // Parte vacía de las barras
 
     // Text colors
     static let textPrimary = Color.white.opacity(0.92)   // High contrast text
     static let textSecondary = Color.white.opacity(0.70) // Muted labels and secondary text
     static let textMuted = Color.white.opacity(0.50)     // Subtitle/disabled text
 
-    // Accents & status colors
-    static let accent = Color(hex: "#3574F0")            // JetBrains Blue
-    static let success = Color(hex: "#59A869")           // JetBrains Green (OK)
-    static let warning = Color(hex: "#EDA200")           // JetBrains Orange/Yellow
-    static let error = Color(hex: "#DB5860")             // JetBrains Red
+    // Acentos y estados. Tonos claros para que destaquen sobre el cristal
+    // oscuro, y el aviso en amarillo (no naranja) para no confundirlo con el
+    // color de Claude.
+    static let accent = Color(hex: "#6EA0FF")            // Azul (enlaces y acciones)
+    static let success = Color(hex: "#6FD08C")           // Verde (OK)
+    static let warning = Color(hex: "#FFD43B")           // Amarillo (70 %+)
+    static let error = Color(hex: "#FF7B72")             // Rojo (90 %+)
 
     // Color de cada proveedor en su sección y sus barras
-    static let claude = Color(hex: "#D97757")            // Arcilla de Anthropic
-    static let gemini = Color(hex: "#A87FFB")            // Violeta del degradado de Gemini
+    static let claude = Color(hex: "#F0A07F")            // Arcilla de Anthropic, aclarada
+    static let gemini = Color(hex: "#C3A6FF")            // Violeta de Gemini, aclarado
     
     // Monospaced typography support
     static func monospaced(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
