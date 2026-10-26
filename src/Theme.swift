@@ -9,8 +9,10 @@ struct Theme {
     // Superficies
     static let background = dynamic(light: "#F2F2F5", dark: "#232325")  // Fondo del panel
     static let card = dynamic(light: "#FFFFFF", dark: "#2F2F32")        // Tarjetas
-    static let border = dynamic(light: "#DEDEE3", dark: "#3E3E42")      // Bordes y separadores
-    static let track = dynamic(light: "#E3E3E8", dark: "#4A4A4E")       // Parte vacía de las barras
+    static let border = dynamic(light: "#E4E4E9", dark: "#3E3E42")      // Bordes y separadores
+    static let track = dynamic(light: "#E8E8ED", dark: "#46464A")       // Parte vacía de las barras e iconos
+    // Sombra suave de las tarjetas; en modo oscuro no se vería, así que no hay.
+    static let shadow = dynamic(light: NSColor.black.withAlphaComponent(0.07), dark: .clear)
 
     // Texto
     static let textPrimary = dynamic(light: "#1D1D1F", dark: "#F5F5F7")
@@ -28,10 +30,12 @@ struct Theme {
     static let gemini = dynamic(light: "#7B4FE0", dark: "#C3A6FF")      // Violeta de Gemini
 
     private static func dynamic(light: String, dark: String) -> Color {
-        let lightColor = NSColor(hex: light)
-        let darkColor = NSColor(hex: dark)
-        return Color(NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
+        dynamic(light: NSColor(hex: light), dark: NSColor(hex: dark))
+    }
+
+    private static func dynamic(light: NSColor, dark: NSColor) -> Color {
+        Color(NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
         })
     }
 }

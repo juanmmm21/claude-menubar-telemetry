@@ -99,6 +99,13 @@ class TelemetryManager: ObservableObject {
             aggregateAndPublish(lastScannedRequests)
         }
     }
+    // Contador de Fable, créditos de uso y saldo prepago en la tarjeta de
+    // Claude. Ocultos por defecto: son datos que no se miran a diario.
+    @Published var showClaudeExtras: Bool = UserDefaults.standard.bool(forKey: "showClaudeExtras") {
+        didSet {
+            UserDefaults.standard.set(showClaudeExtras, forKey: "showClaudeExtras")
+        }
+    }
     @Published var lastRefreshed: Date = Date()
     @Published var isScanning: Bool = false
     

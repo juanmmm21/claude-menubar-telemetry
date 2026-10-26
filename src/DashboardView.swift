@@ -52,9 +52,30 @@ struct DashboardView: View {
     // MARK: - Cabecera
 
     private var headerView: some View {
-        HStack(spacing: 8) {
-            Text("Uso de IA")
-                .font(.system(size: 14, weight: .semibold))
+        HStack(spacing: 10) {
+            // Icono de la app con los colores de los dos proveedores.
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Theme.claude, Theme.gemini],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 28, height: 28)
+                .overlay(
+                    Image(systemName: "chart.bar.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.card)
+                )
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Uso de IA")
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                Text("Claude y Gemini")
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+            }
 
             Spacer()
 
@@ -88,7 +109,7 @@ struct DashboardView: View {
 
     // Cada ventana semanal por modelo que sirva Anthropic. Cuando no hay
     // ninguna, se muestra el contador local de Fable en vez de inventarse un
-    // porcentaje.
+    // porcentaje (si está activado en Ajustes).
     @ViewBuilder
     private var claudeModelWindows: some View {
         if let modelWindows = manager.accountUsage?.modelWindows, !modelWindows.isEmpty {
@@ -101,7 +122,7 @@ struct DashboardView: View {
                     color: Theme.claude
                 )
             }
-        } else {
+        } else if manager.showClaudeExtras {
             rowDivider
             valueRow(
                 "Fable · 7 días",
@@ -111,10 +132,17 @@ struct DashboardView: View {
     }
 
     // Créditos de uso (con lo que se paga Fable al agotar la cuota del plan)
-    // y saldo prepago. Sin dato en vivo no se pinta nada: el subtítulo de la
-    // tarjeta ya explica por qué.
+    // y saldo prepago, solo si están activados en Ajustes. Sin dato en vivo no
+    // se pinta nada: el subtítulo de la tarjeta ya explica por qué.
     @ViewBuilder
     private var claudeCreditRows: some View {
+        if manager.showClaudeExtras {
+            claudeCreditDetails
+        }
+    }
+
+    @ViewBuilder
+    private var claudeCreditDetails: some View {
         if let credits = manager.accountUsage?.credits {
             rowDivider
             if credits.isEnabled {
@@ -253,16 +281,14 @@ struct DashboardView: View {
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             if manager.launchAtLoginSupported {
-                HStack {
-                    Text("Iniciar con macOS")
-                        .font(.system(size: 13))
-                    Spacer()
-                    Toggle("Iniciar con macOS", isOn: $manager.launchAtLoginEnabled)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                }
+                switchRow("Iniciar con macOS", isOn: $manager.launchAtLoginEnabled)
             }
+
+            switchRow(
+                "Fable, créditos y saldo",
+                detail: "Muestra en Claude el contador de Fable, los créditos de uso y el saldo prepago.",
+                isOn: $manager.showClaudeExtras
+            )
 
             if manager.geminiApp != .needsLogin {
                 Button(action: {
@@ -294,11 +320,15 @@ struct DashboardView: View {
                 action()
             }
         }) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.textSecondary)
-                    .frame(width: 16)
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Theme.track)
+                    .frame(width: 24, height: 24)
+                    .overlay(
+                        Image(systemName: systemImage)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Theme.textSecondary)
+                    )
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
                 Spacer()
@@ -308,10 +338,30 @@ struct DashboardView: View {
                     .rotationEffect(.degrees(isOpen ? 90 : 0))
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private func switchRow(_ title: String, detail: String? = nil, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13))
+                if let detail = detail {
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 8)
+            Toggle(title, isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
     }
 
     // MARK: - Pie
@@ -347,11 +397,10 @@ struct DashboardView: View {
                 Text("Salir")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(Theme.textSecondary)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 4)
                     .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(Theme.border, lineWidth: 1)
+                        Capsule().fill(Theme.track)
                     )
                     .contentShape(Rectangle())
             }
@@ -382,25 +431,34 @@ struct DashboardView: View {
                                              caption: String,
                                              @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    Circle()
-                        .fill(color)
-                        .frame(width: 9, height: 9)
-                    Text(name)
-                        .font(.system(size: 14, weight: .semibold))
-                    Spacer()
-                    statusPill(status)
-                }
+            HStack(alignment: .top, spacing: 10) {
+                // Inicial del proveedor sobre un fondo de su color.
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(color.opacity(0.18))
+                    .frame(width: 28, height: 28)
+                    .overlay(
+                        Text(String(name.prefix(1)))
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundColor(color)
+                    )
 
-                Text(caption)
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.textSecondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text(name)
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        Spacer()
+                        statusPill(status)
+                    }
+
+                    Text(caption)
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.textSecondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.horizontal, 12)
-            .padding(.top, 11)
+            .padding(.top, 12)
             .padding(.bottom, 10)
 
             rowDivider
@@ -427,42 +485,50 @@ struct DashboardView: View {
         )
     }
 
-    // Un límite: nombre y % arriba, la barra entera debajo y cuándo se
-    // renueva. El % va en el color del texto y solo cambia (con un icono de
-    // aviso, para no depender del color) desde el 70 %.
+    // Un límite: nombre y cuándo se renueva a la izquierda, el % en grande a
+    // la derecha y la barra entera debajo. El % va en el color del texto y
+    // solo cambia (con un icono de aviso, para no depender del color) desde
+    // el 70 %.
     private func meterRow(_ label: String, percent: Double, caption: String?, color: Color) -> some View {
         let isHigh = percent >= 70
 
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(label)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let caption = caption {
+                        Text(caption)
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
 
                 Spacer(minLength: 8)
 
-                if isHigh {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(levelColor(for: percent, base: color))
+                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                    if isHigh {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(levelColor(for: percent, base: color))
+                            .padding(.trailing, 3)
+                    }
+                    Text("\(Int(percent))")
+                        .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
+                        .foregroundColor(levelColor(for: percent, base: Theme.textPrimary))
+                    Text("%")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundColor(Theme.textSecondary)
                 }
-                Text("\(Int(percent)) %")
-                    .font(.system(size: 13, weight: .semibold).monospacedDigit())
-                    .foregroundColor(levelColor(for: percent, base: Theme.textPrimary))
             }
 
             UsageBar(percent: percent, color: levelColor(for: percent, base: color))
-
-            if let caption = caption {
-                Text(caption)
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.textSecondary)
-                    .lineLimit(1)
-            }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 11)
     }
 
     private func valueRow(_ label: String, value: String, valueColor: Color = Theme.textPrimary) -> some View {
@@ -765,16 +831,18 @@ struct DashboardView: View {
     }
 }
 
-// Tarjeta: superficie opaca con borde fino redondeado.
+// Tarjeta: superficie opaca con borde fino redondeado y una sombra suave en
+// modo claro.
 private struct Card: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Theme.card)
+                    .shadow(color: Theme.shadow, radius: 6, x: 0, y: 2)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .stroke(Theme.border, lineWidth: 1)
             )
     }
@@ -787,7 +855,7 @@ private extension View {
 }
 
 // Barra de uso continua sobre un carril visible: de un vistazo se ve cuánto
-// está lleno.
+// está lleno. El relleno lleva un degradado suave del propio color.
 struct UsageBar: View {
     let percent: Double // 0.0 to 100.0
     let color: Color
@@ -798,17 +866,23 @@ struct UsageBar: View {
                 Capsule()
                     .fill(Theme.track)
                 Capsule()
-                    .fill(color)
+                    .fill(
+                        LinearGradient(
+                            colors: [color.opacity(0.7), color],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
                     .frame(width: fillWidth(in: geo.size.width))
             }
         }
-        .frame(height: 6)
+        .frame(height: 8)
     }
 
     // Cualquier uso por encima de cero se ve, aunque sea como un punto.
     private func fillWidth(in totalWidth: CGFloat) -> CGFloat {
         let clamped = min(max(percent, 0), 100)
         guard clamped > 0 else { return 0 }
-        return max(totalWidth * CGFloat(clamped / 100), 6)
+        return max(totalWidth * CGFloat(clamped / 100), 8)
     }
 }
