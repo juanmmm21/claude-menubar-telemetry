@@ -5,7 +5,7 @@ A native macOS menu bar utility that shows, at a glance, how much of your **Clau
 The interface is an opaque popover with a terminal aesthetic — monospaced typography, `SNAKE_CASE` labels, full-width usage bars — that follows macOS light and dark mode and stays readable over any background.
 
 <div align="center">
-  <img src="docs/screenshot.png" width="380" alt="AI Telemetry popover showing Claude and Gemini session and weekly usage" />
+  <img src="docs/screenshot.png" width="380" alt="AI Telemetry popover showing Claude and Gemini session and weekly usage and the OpenAI API credit balance" />
 </div>
 
 ---
