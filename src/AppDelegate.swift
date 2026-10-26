@@ -20,10 +20,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             popover.contentSize = NSSize(width: 380, height: 600)
         }
 
+        // Sin apariencia fija: el panel es opaco y sigue el modo claro u oscuro
+        // del sistema (ver Theme).
         popover.behavior = .transient
-        // Apariencia oscura fija para que el cristal del panel (y la flecha del
-        // popover) se vea igual con el modo claro del sistema.
-        popover.appearance = NSAppearance(named: .darkAqua)
         popover.contentViewController = hostingController
         
         // Setup menu bar item

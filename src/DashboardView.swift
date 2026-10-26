@@ -8,8 +8,9 @@ struct DashboardView: View {
     // Live timer to refresh countdowns and checks every second without scanning logs
     let timer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
-    // State to trigger UI redraw on timer tick (y parpadeo del cursor de la cabecera)
-    @State private var tick: Bool = false
+    // Hora de referencia de las cuentas atrás y del parpadeo del cursor de la
+    // cabecera: al cambiar cada segundo, los vuelve a pintar.
+    @State private var now = Date()
 
     // Cajones plegables: el detalle por modelo y los ajustes no hacen falta
     // para el vistazo rápido.
@@ -20,17 +21,16 @@ struct DashboardView: View {
         VStack(spacing: 0) {
             headerView
 
-            Rectangle()
-                .fill(Theme.border)
-                .frame(height: 1)
+            separator
 
             // Sin ScrollView: el panel mide exactamente lo que ocupa el
             // contenido y AppDelegate hace que el popover tome ese tamaño. Para
             // que nunca se salga de la pantalla, los cajones son excluyentes y
             // las tablas enseñan solo los modelos con más uso.
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 claudeSection
                 geminiSection
+                openAISection
 
                 DashedLine()
 
@@ -54,19 +54,17 @@ struct DashboardView: View {
             }
             .padding(16)
 
-            Rectangle()
-                .fill(Theme.border)
-                .frame(height: 1)
+            separator
 
             footerView
         }
         .frame(width: 380)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(VisualEffectBackground(material: .hudWindow).ignoresSafeArea())
+        .background(Theme.background.ignoresSafeArea())
         .foregroundColor(Theme.textPrimary)
-        .onReceive(timer) { _ in
-            tick.toggle() // Forces redraw of countdown strings
+        .onReceive(timer) { date in
+            now = date
             manager.updateBlockStateIfNeeded() // Checks timeline for real-time status transitions
         }
     }
@@ -79,22 +77,25 @@ struct DashboardView: View {
                 HStack(spacing: 0) {
                     Text(">")
                     Text("_")
-                        .opacity(tick ? 1 : 0.15)
+                        .opacity(cursorVisible ? 1 : 0.15)
                 }
                 .foregroundColor(Theme.accent)
-                .font(Theme.monospaced(14, weight: .bold))
+                .font(Theme.monospaced(15, weight: .bold))
 
                 Text("AI_TELEMETRY")
-                    .font(Theme.monospaced(13, weight: .bold))
-                    .foregroundColor(Theme.textPrimary)
+                    .font(Theme.monospaced(14, weight: .bold))
             }
 
             Spacer()
 
-            statusPill(overallStatus, size: 10)
+            statusPill(overallStatus)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    private var cursorVisible: Bool {
+        Int(now.timeIntervalSince1970) % 2 == 0
     }
 
     // MARK: - Claude
@@ -104,14 +105,14 @@ struct DashboardView: View {
             meterRow(
                 "SESION_5H",
                 percent: Double(displaySessionPercent),
-                trailing: sessionResetShort,
+                caption: sessionResetCaption,
                 color: Theme.claude
             )
             DashedLine()
             meterRow(
                 "SEMANA",
                 percent: weeklyAllPercent,
-                trailing: manager.accountUsage?.sevenDay?.resetsAt.map { shortReset($0) } ?? "dom 08:00",
+                caption: manager.accountUsage?.sevenDay?.resetsAt.map { resetCaption($0) },
                 color: Theme.claude
             )
             claudeModelWindows
@@ -121,7 +122,7 @@ struct DashboardView: View {
 
     // Cada ventana semanal por modelo que sirva Anthropic. Cuando no hay
     // ninguna, se muestra el contador local de Fable en vez de inventarse un
-    // porcentaje.
+    // porcentaje (si está activado en CONFIG).
     @ViewBuilder
     private var claudeModelWindows: some View {
         if let modelWindows = manager.accountUsage?.modelWindows, !modelWindows.isEmpty {
@@ -130,11 +131,11 @@ struct DashboardView: View {
                 meterRow(
                     "SEM_" + snakeCase(scoped.displayName, dropping: "CLAUDE"),
                     percent: min(scoped.window.utilizationPercent, 100.0),
-                    trailing: scoped.window.resetsAt.map { shortReset($0) } ?? "—",
+                    caption: scoped.window.resetsAt.map { resetCaption($0) },
                     color: Theme.claude
                 )
             }
-        } else {
+        } else if manager.showClaudeExtras {
             DashedLine()
             valueRow(
                 "FABLE_7D",
@@ -144,10 +145,17 @@ struct DashboardView: View {
     }
 
     // Créditos de uso (con lo que se paga Fable al agotar la cuota del plan)
-    // y saldo prepago. Sin dato en vivo no se pinta nada: el comentario de la
-    // sección ya explica por qué.
+    // y saldo prepago, solo si están activados en CONFIG. Sin dato en vivo no
+    // se pinta nada: el comentario de la sección ya explica por qué.
     @ViewBuilder
     private var claudeCreditRows: some View {
+        if manager.showClaudeExtras {
+            claudeCreditDetails
+        }
+    }
+
+    @ViewBuilder
+    private var claudeCreditDetails: some View {
         if let credits = manager.accountUsage?.credits {
             DashedLine()
             if credits.isEnabled {
@@ -159,7 +167,7 @@ struct DashboardView: View {
                     valueRow(
                         "CREDITOS",
                         value: "\(usedText) / \(formatMoney(limit, currency: credits.currencyCode))",
-                        valueColor: barColor(for: pct, base: Theme.textPrimary)
+                        valueColor: levelColor(for: pct, base: Theme.textPrimary)
                     )
                 } else {
                     valueRow("CREDITOS", value: "\(usedText) · sin tope")
@@ -189,7 +197,7 @@ struct DashboardView: View {
                     meterRow(
                         "CLI_" + snakeCase(GeminiModelNames.displayName(model.modelId), dropping: "GEMINI"),
                         percent: model.usedPercent,
-                        trailing: model.resetsAt.map { shortReset($0) } ?? "—",
+                        caption: model.resetsAt.map { resetCaption($0) },
                         color: Theme.gemini
                     )
                 }
@@ -213,14 +221,14 @@ struct DashboardView: View {
             meterRow(
                 "SESION_5H",
                 percent: usage.current?.usedPercent ?? 0,
-                trailing: geminiResetLabel(usage.current),
+                caption: geminiResetCaption(usage.current),
                 color: Theme.gemini
             )
             DashedLine()
             meterRow(
                 "SEMANA",
                 percent: usage.weekly?.usedPercent ?? 0,
-                trailing: geminiResetLabel(usage.weekly),
+                caption: geminiResetCaption(usage.weekly),
                 color: Theme.gemini
             )
         case .needsLogin:
@@ -235,6 +243,33 @@ struct DashboardView: View {
             valueRow("APP_GEMINI", value: "consultando…", valueColor: Theme.textSecondary)
         case .unavailable:
             valueRow("APP_GEMINI", value: "sin dato", valueColor: Theme.textSecondary)
+        }
+    }
+
+    // MARK: - OpenAI
+
+    private var openAISection: some View {
+        providerSection("OPENAI", color: Theme.openAI, status: openAIStatus, comment: openAIScopeComment) {
+            switch manager.openAIBalance {
+            case .loaded(let balance):
+                valueRow(
+                    "SALDO_API",
+                    value: balance.displayText,
+                    valueColor: balance.amount <= 0 ? Theme.error : Theme.textPrimary
+                )
+            case .needsLogin:
+                Button(action: {
+                    manager.connectOpenAIAccount()
+                }) {
+                    valueRow("CUENTA_OPENAI", value: "conectar →", valueColor: Theme.accent)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            case .unknown:
+                valueRow("SALDO_API", value: "consultando…", valueColor: Theme.textSecondary)
+            case .unavailable:
+                valueRow("SALDO_API", value: "sin dato", valueColor: Theme.textSecondary)
+            }
         }
     }
 
@@ -259,40 +294,59 @@ struct DashboardView: View {
     }
 
     private var settingsDrawer: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 0) {
             if manager.launchAtLoginSupported {
-                Toggle(isOn: $manager.launchAtLoginEnabled) {
-                    Text("INICIAR_CON_MACOS")
-                        .font(Theme.monospaced(10, weight: .bold))
-                        .foregroundColor(Theme.textPrimary)
-                }
-                .toggleStyle(.checkbox)
-
+                switchRow("INICIAR_CON_MACOS", isOn: $manager.launchAtLoginEnabled)
                 DashedLine()
             }
+
+            switchRow(
+                "EXTRAS_CLAUDE",
+                comment: "fable, créditos de uso y saldo prepago",
+                isOn: $manager.showClaudeExtras
+            )
+            DashedLine()
 
             if manager.geminiApp != .needsLogin {
-                Button(action: {
+                disconnectRow("DESCONECTAR_GOOGLE") {
                     manager.disconnectGoogleAccount()
-                }) {
-                    Text("DESCONECTAR_GOOGLE")
-                        .font(Theme.monospaced(10, weight: .bold))
-                        .foregroundColor(Theme.error)
                 }
-                .buttonStyle(.plain)
-
                 DashedLine()
             }
 
-            Text("// límites de respaldo de Claude: solo se usan sin dato en vivo de la cuenta")
-                .font(Theme.monospaced(8))
-                .foregroundColor(Theme.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
-            stepperRow(title: "SESION_5H", value: $manager.fiveHourLimit, step: 5, range: 10...200)
-            stepperRow(title: "SEMANA", value: $manager.weeklyLimit, step: 100, range: 200...5000)
+            if manager.openAIBalance != .needsLogin {
+                disconnectRow("DESCONECTAR_OPENAI") {
+                    manager.disconnectOpenAIAccount()
+                }
+                DashedLine()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("// límites de respaldo de Claude: solo se usan sin dato en vivo de la cuenta")
+                    .font(Theme.monospaced(10))
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                stepperRow("SESION_5H", value: $manager.fiveHourLimit, step: 5, range: 10...200)
+                stepperRow("SEMANA", value: $manager.weeklyLimit, step: 100, range: 200...5000)
+            }
+            .padding(12)
         }
-        .padding(12)
-        .glassCard()
+        .panel()
+    }
+
+    private func disconnectRow(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                    .font(Theme.monospaced(11, weight: .bold))
+                    .foregroundColor(Theme.error)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func drawerToggle(title: String, isOpen: Bool, action: @escaping () -> Void) -> some View {
@@ -303,7 +357,7 @@ struct DashboardView: View {
         }) {
             HStack {
                 Text(isOpen ? "[-] \(title)" : "[+] \(title)")
-                    .font(Theme.monospaced(10, weight: .bold))
+                    .font(Theme.monospaced(11, weight: .bold))
                     .foregroundColor(Theme.accent)
                 Spacer()
             }
@@ -325,15 +379,17 @@ struct DashboardView: View {
                     manager.refresh()
                 }) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(Theme.textSecondary)
+                        .frame(width: 14, height: 14)
                 }
                 .buttonStyle(.plain)
+                .help("Actualizar")
             }
 
             Text("SYNC \(formatTime(manager.lastRefreshed))")
-                .font(Theme.monospaced(9))
-                .foregroundColor(Theme.textMuted)
+                .font(Theme.monospaced(10))
+                .foregroundColor(Theme.textSecondary)
 
             Spacer()
 
@@ -341,9 +397,9 @@ struct DashboardView: View {
                 NSApplication.shared.terminate(nil)
             }) {
                 Text("QUIT")
-                    .font(Theme.monospaced(10, weight: .bold))
+                    .font(Theme.monospaced(11, weight: .bold))
                     .foregroundColor(Theme.error)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 5)
@@ -351,8 +407,9 @@ struct DashboardView: View {
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 5)
-                            .stroke(Theme.error.opacity(0.45), lineWidth: 1)
+                            .stroke(Theme.error.opacity(0.5), lineWidth: 1)
                     )
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -361,6 +418,12 @@ struct DashboardView: View {
     }
 
     // MARK: - Piezas reutilizables
+
+    private var separator: some View {
+        Rectangle()
+            .fill(Theme.border)
+            .frame(height: 1)
+    }
 
     private func providerSection<Content: View>(_ name: String,
                                                 color: Color,
@@ -373,15 +436,14 @@ struct DashboardView: View {
                     Text(">")
                         .foregroundColor(color)
                     Text(name)
-                        .foregroundColor(Theme.textPrimary)
                     Spacer()
-                    statusPill(status, size: 9)
+                    statusPill(status)
                 }
-                .font(Theme.monospaced(12, weight: .bold))
+                .font(Theme.monospaced(13, weight: .bold))
 
                 Text("// \(comment)")
-                    .font(Theme.monospaced(9))
-                    .foregroundColor(Theme.textMuted)
+                    .font(Theme.monospaced(10))
+                    .foregroundColor(Theme.textSecondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -390,76 +452,113 @@ struct DashboardView: View {
                 content()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .glassCard()
+            .panel()
         }
     }
 
-    private func statusPill(_ status: StatusBadge, size: CGFloat) -> some View {
+    private func statusPill(_ status: StatusBadge) -> some View {
         HStack(spacing: 5) {
             Circle()
                 .fill(status.color)
-                .frame(width: size - 3, height: size - 3)
+                .frame(width: 7, height: 7)
             Text(status.label)
-                .font(Theme.monospaced(size, weight: .bold))
-                .foregroundColor(status.color)
+                .font(Theme.monospaced(10, weight: .bold))
         }
-        .padding(.horizontal, 7)
+        .foregroundColor(status.color)
+        .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(
-            Capsule().fill(status.color.opacity(0.10))
+            Capsule().fill(status.color.opacity(0.12))
         )
         .overlay(
-            Capsule().stroke(status.color.opacity(0.35), lineWidth: 1)
+            Capsule().stroke(status.color.opacity(0.4), lineWidth: 1)
         )
     }
 
-    // Una línea por límite: etiqueta, medidor, % y cuándo se restablece.
-    private func meterRow(_ label: String, percent: Double, trailing: String, color: Color) -> some View {
-        let tint = barColor(for: percent, base: color)
+    // Un límite: etiqueta y cuándo se renueva a la izquierda, el % grande a la
+    // derecha y la barra entera debajo. El % va en el color del texto y solo
+    // cambia (con un icono de aviso, para no depender del color) desde el 70 %.
+    private func meterRow(_ label: String, percent: Double, caption: String?, color: Color) -> some View {
+        let isHigh = percent >= 70
 
-        return HStack(spacing: 10) {
-            Text(label)
-                .font(Theme.monospaced(10, weight: .bold))
-                .foregroundColor(Theme.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(width: 100, alignment: .leading)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(label)
+                        .font(Theme.monospaced(12, weight: .bold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let caption = caption {
+                        Text(caption)
+                            .font(Theme.monospaced(10))
+                            .foregroundColor(Theme.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
 
-            SegmentedMeter(percent: percent, color: tint, segments: 18)
+                Spacer(minLength: 8)
 
-            Text("\(Int(percent))%")
-                .font(Theme.monospaced(10, weight: .bold))
-                .foregroundColor(tint)
-                .frame(width: 34, alignment: .trailing)
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    if isHigh {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(levelColor(for: percent, base: color))
+                            .padding(.trailing, 4)
+                    }
+                    Text("\(Int(percent))")
+                        .font(Theme.monospaced(20, weight: .bold))
+                        .foregroundColor(levelColor(for: percent, base: Theme.textPrimary))
+                    Text("%")
+                        .font(Theme.monospaced(12, weight: .bold))
+                        .foregroundColor(Theme.textSecondary)
+                }
+            }
 
-            Text(trailing)
-                .font(Theme.monospaced(9))
-                .foregroundColor(Theme.textSecondary)
-                .lineLimit(1)
-                .frame(width: 58, alignment: .trailing)
+            UsageBar(percent: percent, color: levelColor(for: percent, base: color))
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.vertical, 11)
     }
 
     private func valueRow(_ label: String, value: String, valueColor: Color = Theme.textPrimary) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(label)
-                .font(Theme.monospaced(10, weight: .bold))
-                .foregroundColor(Theme.textPrimary)
+                .font(Theme.monospaced(12, weight: .bold))
                 .fixedSize()
 
             DashedLine(dash: [1, 3])
 
             Text(value)
-                .font(Theme.monospaced(10, weight: .bold))
+                .font(Theme.monospaced(12, weight: .bold))
                 .foregroundColor(valueColor)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .layoutPriority(1)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.vertical, 11)
+    }
+
+    private func switchRow(_ title: String, comment: String? = nil, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(Theme.monospaced(11, weight: .bold))
+                if let comment = comment {
+                    Text("// \(comment)")
+                        .font(Theme.monospaced(10))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 8)
+            Toggle(title, isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
     private func modelTable(title: String,
@@ -472,20 +571,20 @@ struct DashboardView: View {
                     .foregroundColor(color)
                 Spacer()
                 Text("PROMPTS")
-                    .frame(width: 60, alignment: .trailing)
+                    .frame(width: 64, alignment: .trailing)
                 Text("TOKENS")
-                    .frame(width: 60, alignment: .trailing)
+                    .frame(width: 64, alignment: .trailing)
             }
-            .font(Theme.monospaced(9, weight: .bold))
+            .font(Theme.monospaced(10, weight: .bold))
             .foregroundColor(Theme.textSecondary)
             .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.vertical, 8)
 
             if rows.isEmpty {
                 DashedLine()
                 Text("Sin actividad en los logs.")
-                    .font(Theme.monospaced(10))
-                    .foregroundColor(Theme.textMuted)
+                    .font(Theme.monospaced(11))
+                    .foregroundColor(Theme.textSecondary)
                     .padding(12)
             } else {
                 ForEach(Array(rows.prefix(Self.maxModelRows))) { usage in
@@ -496,53 +595,29 @@ struct DashboardView: View {
                             .truncationMode(.tail)
                         Spacer(minLength: 8)
                         Text("\(usage.requestsCount)")
-                            .frame(width: 60, alignment: .trailing)
+                            .frame(width: 64, alignment: .trailing)
                         Text(formatNumber(usage.inputTokens + usage.outputTokens))
-                            .frame(width: 60, alignment: .trailing)
+                            .frame(width: 64, alignment: .trailing)
                             .foregroundColor(highlight(usage.modelName) ? color : Theme.textPrimary)
                     }
-                    .font(Theme.monospaced(10))
+                    .font(Theme.monospaced(11))
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
+                    .padding(.vertical, 8)
                 }
             }
         }
-        .glassCard()
+        .panel()
     }
 
-    private func stepperRow(title: String, value: Binding<Int>, step: Int, range: ClosedRange<Int>) -> some View {
-        HStack {
+    private func stepperRow(_ title: String, value: Binding<Int>, step: Int, range: ClosedRange<Int>) -> some View {
+        HStack(spacing: 8) {
             Text(title)
-                .font(Theme.monospaced(10))
-                .foregroundColor(Theme.textSecondary)
+                .font(Theme.monospaced(11, weight: .bold))
             Spacer()
-            HStack(spacing: 8) {
-                Button("-") {
-                    if value.wrappedValue - step >= range.lowerBound {
-                        value.wrappedValue -= step
-                    }
-                }
-                .buttonStyle(.plain)
+            Text("\(value.wrappedValue)")
                 .font(Theme.monospaced(12, weight: .bold))
-                .frame(width: 16, height: 16)
-                .background(Theme.border)
-                .cornerRadius(3)
-
-                Text("\(value.wrappedValue)")
-                    .font(Theme.monospaced(10, weight: .bold))
-                    .frame(width: 40, alignment: .center)
-
-                Button("+") {
-                    if value.wrappedValue + step <= range.upperBound {
-                        value.wrappedValue += step
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(Theme.monospaced(12, weight: .bold))
-                .frame(width: 16, height: 16)
-                .background(Theme.border)
-                .cornerRadius(3)
-            }
+            Stepper(title, value: value, in: range, step: step)
+                .labelsHidden()
         }
     }
 
@@ -570,10 +645,21 @@ struct DashboardView: View {
         }
     }
 
-    // La cabecera resume lo peor de los dos.
+    private var openAIStatus: StatusBadge {
+        switch manager.openAIBalance {
+        case .loaded(let balance):
+            return balance.amount <= 0 ? ("NO_CREDIT", Theme.error) : ("LIVE", Theme.success)
+        case .needsLogin:
+            return ("LOGIN", Theme.warning)
+        case .unknown, .unavailable:
+            return ("NO_DATA", Theme.textSecondary)
+        }
+    }
+
+    // La cabecera resume lo peor de los tres.
     private var overallStatus: StatusBadge {
-        let candidates = [claudeStatus, geminiStatus]
-        for label in ["RATE_LIMITED", "HIGH_USAGE"] {
+        let candidates = [claudeStatus, geminiStatus, openAIStatus]
+        for label in ["RATE_LIMITED", "NO_CREDIT", "HIGH_USAGE"] {
             if let match = candidates.first(where: { $0.label == label }) {
                 return match
             }
@@ -624,12 +710,12 @@ struct DashboardView: View {
     }
 
     // Con la ventana vacía no hay reset que contar.
-    private var sessionResetShort: String {
+    private var sessionResetCaption: String {
         guard hasMeaningfulSessionUsage || isSessionLimitReached,
               let resetDate = manager.nextResetDate else {
-            return "—"
+            return "sin uso en esta ventana"
         }
-        return shortReset(resetDate)
+        return resetCaption(resetDate)
     }
 
     private var claudeScopeComment: String {
@@ -694,18 +780,32 @@ struct DashboardView: View {
         }
     }
 
-    // Hora o cuenta atrás si se pudo interpretar; si no, el texto de Google.
-    private func geminiResetLabel(_ window: GeminiAppWindow?) -> String {
-        if let date = window?.resetsAt {
-            return shortReset(date)
+    // MARK: - Helpers OpenAI
+
+    private var openAIScopeComment: String {
+        switch manager.openAIBalance {
+        case .loaded:
+            return "saldo de créditos de la API · platform.openai.com"
+        case .needsLogin:
+            return "conecta tu cuenta de OpenAI una vez para ver el saldo de la API"
+        case .unavailable(let reason):
+            return reason
+        case .unknown:
+            return "consultando platform.openai.com…"
         }
-        guard let text = window?.resetText else { return "—" }
-        return text.split(separator: " ").suffix(1).joined()
+    }
+
+    // Cuenta atrás o día y hora si se pudo interpretar; si no, el texto de Google.
+    private func geminiResetCaption(_ window: GeminiAppWindow?) -> String? {
+        if let date = window?.resetsAt {
+            return resetCaption(date)
+        }
+        return window?.resetText
     }
 
     // MARK: - Formato
 
-    private func barColor(for percent: Double, base: Color) -> Color {
+    private func levelColor(for percent: Double, base: Color) -> Color {
         if percent >= 90 { return Theme.error }
         if percent >= 70 { return Theme.warning }
         return base
@@ -721,22 +821,23 @@ struct DashboardView: View {
         return words.joined(separator: "_")
     }
 
-    // Menos de un día: cuenta atrás ("2h 10m"). Más: día y hora ("dom 08:00").
-    private func shortReset(_ date: Date) -> String {
-        let diff = date.timeIntervalSince(Date())
-        guard diff > 0 else { return "ahora" }
+    // Menos de un día: cuenta atrás ("reset en 2h 10m"). Más: día y hora
+    // ("reset dom 08:00").
+    private func resetCaption(_ date: Date) -> String {
+        let diff = date.timeIntervalSince(now)
+        guard diff > 0 else { return "reset ahora" }
 
         let mins = Int(ceil(diff / 60.0))
         if mins >= 24 * 60 {
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "es_ES")
             formatter.dateFormat = "E HH:mm"
-            return formatter.string(from: date)
+            return "reset \(formatter.string(from: date))"
         }
         if mins >= 60 {
-            return "\(mins / 60)h \(mins % 60)m"
+            return "reset en \(mins / 60)h \(mins % 60)m"
         }
-        return "\(mins)m"
+        return "reset en \(mins)m"
     }
 
     private func formatNumber(_ num: Int) -> String {
@@ -772,13 +873,14 @@ struct DashboardView: View {
     }
 }
 
-// Panel de cristal: relleno blanco muy tenue y borde fino redondeado.
-private struct GlassCard: ViewModifier {
+// Panel opaco con borde fino y esquinas poco redondeadas, como una ventana de
+// terminal.
+private struct Panel: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Theme.cardBackground)
+                    .fill(Theme.card)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -788,58 +890,35 @@ private struct GlassCard: ViewModifier {
 }
 
 private extension View {
-    func glassCard() -> some View {
-        modifier(GlassCard())
+    func panel() -> some View {
+        modifier(Panel())
     }
 }
 
-// Desenfoque del sistema detrás del popover. `.active` porque el popover no
-// siempre es la ventana activa y, si no, macOS lo pintaría opaco.
-struct VisualEffectBackground: NSViewRepresentable {
-    var material: NSVisualEffectView.Material
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        view.material = material
-    }
-}
-
-// Barra de uso por segmentos, como un medidor de terminal.
-struct SegmentedMeter: View {
+// Barra de uso continua sobre un carril visible: de un vistazo se ve cuánto
+// está lleno. Esquinas casi rectas para el aire de terminal.
+struct UsageBar: View {
     let percent: Double // 0.0 to 100.0
     let color: Color
-    var segments: Int = 28
 
     var body: some View {
         GeometryReader { geo in
-            HStack(spacing: 2) {
-                ForEach(0..<segments, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(index < filledSegments ? color : Theme.meterTrack)
-                        .frame(width: segmentWidth(in: geo.size.width))
-                }
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Theme.track)
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(color)
+                    .frame(width: fillWidth(in: geo.size.width))
             }
         }
         .frame(height: 8)
     }
 
-    // Cualquier uso por encima de cero enciende al menos un segmento.
-    private var filledSegments: Int {
+    // Cualquier uso por encima de cero se ve, aunque sea como un punto.
+    private func fillWidth(in totalWidth: CGFloat) -> CGFloat {
         let clamped = min(max(percent, 0), 100)
-        let filled = Int((clamped / 100 * Double(segments)).rounded())
-        return clamped > 0 ? max(filled, 1) : 0
-    }
-
-    private func segmentWidth(in totalWidth: CGFloat) -> CGFloat {
-        let spacing = CGFloat(segments - 1) * 2
-        return max((totalWidth - spacing) / CGFloat(segments), 1)
+        guard clamped > 0 else { return 0 }
+        return max(totalWidth * CGFloat(clamped / 100), 4)
     }
 }
 

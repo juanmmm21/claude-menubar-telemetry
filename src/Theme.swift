@@ -1,61 +1,61 @@
 import SwiftUI
+import AppKit
 
+// Paleta opaca que sigue el modo claro u oscuro del sistema. Nada deja ver lo
+// que hay detrás del popover, así que el contraste es el mismo sobre una
+// ventana blanca que sobre un fondo de escritorio oscuro. Cada color tiene una
+// versión para cada modo con contraste suficiente sobre su fondo.
 struct Theme {
-    // Superficies translúcidas: el fondo es el desenfoque del sistema (ver
-    // VisualEffectBackground), así que paneles, bordes y texto se definen como
-    // blanco con distinta opacidad para que se integren con lo que hay detrás.
-    static let background = Color.black.opacity(0.25)    // Botones sobre el cristal
-    static let cardBackground = Color.white.opacity(0.05) // Paneles
-    static let border = Color.white.opacity(0.10)         // Bordes y separadores
-    static let meterTrack = Color.white.opacity(0.08)     // Segmentos apagados
+    // Superficies: grises fríos, como un editor de código en modo claro u oscuro.
+    static let background = dynamic(light: "#F3F4F6", dark: "#1B1D21")  // Fondo del panel
+    static let card = dynamic(light: "#FFFFFF", dark: "#25282D")        // Paneles
+    static let border = dynamic(light: "#DDE1E6", dark: "#383C43")      // Bordes y separadores
+    static let track = dynamic(light: "#E6E9ED", dark: "#3A3F46")       // Parte vacía de las barras
 
-    // Text colors
-    static let textPrimary = Color.white.opacity(0.92)   // High contrast text
-    static let textSecondary = Color.white.opacity(0.58) // Muted labels and secondary text
-    static let textMuted = Color.white.opacity(0.38)     // Subtitle/disabled text
+    // Texto
+    static let textPrimary = dynamic(light: "#1F2328", dark: "#EDEFF2")
+    static let textSecondary = dynamic(light: "#57606A", dark: "#A3ABB5")
 
-    // Accents & status colors
-    static let accent = Color(hex: "#3574F0")            // JetBrains Blue
-    static let success = Color(hex: "#59A869")           // JetBrains Green (OK)
-    static let warning = Color(hex: "#EDA200")           // JetBrains Orange/Yellow
-    static let error = Color(hex: "#DB5860")             // JetBrains Red
+    // Estados. El aviso es ocre/amarillo y no naranja, para no confundirlo
+    // con el color de Claude.
+    static let accent = dynamic(light: "#2563EB", dark: "#6EA0FF")      // Azul de terminal (acciones)
+    static let success = dynamic(light: "#1E7F3A", dark: "#6FD08C")     // LIVE
+    static let warning = dynamic(light: "#9A6700", dark: "#FFD43B")     // 70 %+
+    static let error = dynamic(light: "#CF222E", dark: "#FF7B72")       // 90 %+
 
     // Color de cada proveedor en su sección y sus barras
-    static let claude = Color(hex: "#D97757")            // Arcilla de Anthropic
-    static let gemini = Color(hex: "#A87FFB")            // Violeta del degradado de Gemini
-    
-    // Monospaced typography support
+    static let claude = dynamic(light: "#C15F3C", dark: "#F0A07F")      // Arcilla de Anthropic
+    static let gemini = dynamic(light: "#7B4FE0", dark: "#C3A6FF")      // Violeta de Gemini
+    static let openAI = dynamic(light: "#0E8A6B", dark: "#3DD6AC")      // Verde de OpenAI
+
+    // Tipografía monoespaciada: JetBrains Mono si está instalada, si no la del sistema.
     static func monospaced(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         if NSFont(name: "JetBrains Mono", size: size) != nil {
             return Font.custom("JetBrains Mono", size: size).weight(weight)
         }
         return Font.system(size: size, weight: weight, design: .monospaced)
     }
+
+    private static func dynamic(light: String, dark: String) -> Color {
+        let lightColor = NSColor(hex: light)
+        let darkColor = NSColor(hex: dark)
+        return Color(NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? darkColor : lightColor
+        })
+    }
 }
 
-// SwiftUI Color extension to easily initialize with hex strings
-extension Color {
-    init(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        let a, r, g, b: UInt64
-        switch hex.count {
-        case 3: // RGB (12-bit)
-            (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
-        case 6: // RGB (24-bit)
-            (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
-        case 8: // ARGB (32-bit)
-            (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
-        default:
-            (a, r, g, b) = (1, 1, 1, 1)
-        }
+private extension NSColor {
+    // "#RRGGBB"
+    convenience init(hex: String) {
+        let digits = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var value: UInt64 = 0
+        Scanner(string: digits).scanHexInt64(&value)
         self.init(
-            .sRGB,
-            red: Double(r) / 255,
-            green: Double(g) / 255,
-            blue: Double(b) / 255,
-            opacity: Double(a) / 255
+            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1
         )
     }
 }
