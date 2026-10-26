@@ -26,6 +26,7 @@ struct Theme {
     // Color de cada proveedor en su sección y sus barras
     static let claude = dynamic(light: "#C15F3C", dark: "#F0A07F")      // Arcilla de Anthropic
     static let gemini = dynamic(light: "#7B4FE0", dark: "#C3A6FF")      // Violeta de Gemini
+    static let openAI = dynamic(light: "#0E8A6B", dark: "#3DD6AC")      // Verde de OpenAI
 
     // Tipografía monoespaciada: JetBrains Mono si está instalada, si no la del sistema.
     static func monospaced(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {

@@ -69,6 +69,10 @@ class TelemetryManager: ObservableObject {
     private let geminiUsageService = GeminiUsageService()
     private let geminiLogScanner = GeminiLogScanner()
     private let geminiWebUsageService = GeminiWebUsageService()
+
+    // Saldo de créditos de la API de OpenAI (platform.openai.com).
+    @Published var openAIBalance: OpenAIBalanceState = .unknown
+    private let openAIBillingService = OpenAIBillingService()
     private var lastLiveQuotaAttempt: Date = .distantPast
 
     // Iniciar con macOS (SMAppService, macOS 13+). El valor inicial refleja el
@@ -257,6 +261,7 @@ class TelemetryManager: ObservableObject {
         fetchAccountUsage()
         fetchGeminiUsage()
         fetchGeminiAppUsage()
+        fetchOpenAIBalance()
     }
 
     private func fetchGeminiAppUsage() {
@@ -282,6 +287,32 @@ class TelemetryManager: ObservableObject {
         geminiWebUsageService.signOut { [weak self] in
             DispatchQueue.main.async {
                 self?.geminiApp = .needsLogin
+            }
+        }
+    }
+
+    private func fetchOpenAIBalance() {
+        openAIBillingService.fetchBalance { [weak self] state in
+            guard let self = self else { return }
+            // Igual que con Gemini: un fallo puntual no borra el último saldo bueno.
+            if case .unavailable = state, case .loaded = self.openAIBalance {
+                return
+            }
+            self.openAIBalance = state
+        }
+    }
+
+    // Abre la ventana de inicio de sesión de OpenAI. Al terminar, lee el saldo.
+    func connectOpenAIAccount() {
+        openAIBillingService.presentLogin { [weak self] in
+            self?.fetchOpenAIBalance()
+        }
+    }
+
+    func disconnectOpenAIAccount() {
+        openAIBillingService.signOut { [weak self] in
+            DispatchQueue.main.async {
+                self?.openAIBalance = .needsLogin
             }
         }
     }

@@ -30,6 +30,7 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 16) {
                 claudeSection
                 geminiSection
+                openAISection
 
                 DashedLine()
 
@@ -245,6 +246,33 @@ struct DashboardView: View {
         }
     }
 
+    // MARK: - OpenAI
+
+    private var openAISection: some View {
+        providerSection("OPENAI", color: Theme.openAI, status: openAIStatus, comment: openAIScopeComment) {
+            switch manager.openAIBalance {
+            case .loaded(let balance):
+                valueRow(
+                    "SALDO_API",
+                    value: balance.displayText,
+                    valueColor: balance.amount <= 0 ? Theme.error : Theme.textPrimary
+                )
+            case .needsLogin:
+                Button(action: {
+                    manager.connectOpenAIAccount()
+                }) {
+                    valueRow("CUENTA_OPENAI", value: "conectar →", valueColor: Theme.accent)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            case .unknown:
+                valueRow("SALDO_API", value: "consultando…", valueColor: Theme.textSecondary)
+            case .unavailable:
+                valueRow("SALDO_API", value: "sin dato", valueColor: Theme.textSecondary)
+            }
+        }
+    }
+
     // MARK: - Cajones
 
     private var modelsDrawer: some View {
@@ -280,20 +308,16 @@ struct DashboardView: View {
             DashedLine()
 
             if manager.geminiApp != .needsLogin {
-                Button(action: {
+                disconnectRow("DESCONECTAR_GOOGLE") {
                     manager.disconnectGoogleAccount()
-                }) {
-                    HStack {
-                        Text("DESCONECTAR_GOOGLE")
-                            .font(Theme.monospaced(11, weight: .bold))
-                            .foregroundColor(Theme.error)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                DashedLine()
+            }
+
+            if manager.openAIBalance != .needsLogin {
+                disconnectRow("DESCONECTAR_OPENAI") {
+                    manager.disconnectOpenAIAccount()
+                }
                 DashedLine()
             }
 
@@ -308,6 +332,21 @@ struct DashboardView: View {
             .padding(12)
         }
         .panel()
+    }
+
+    private func disconnectRow(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                    .font(Theme.monospaced(11, weight: .bold))
+                    .foregroundColor(Theme.error)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func drawerToggle(title: String, isOpen: Bool, action: @escaping () -> Void) -> some View {
@@ -606,10 +645,21 @@ struct DashboardView: View {
         }
     }
 
-    // La cabecera resume lo peor de los dos.
+    private var openAIStatus: StatusBadge {
+        switch manager.openAIBalance {
+        case .loaded(let balance):
+            return balance.amount <= 0 ? ("NO_CREDIT", Theme.error) : ("LIVE", Theme.success)
+        case .needsLogin:
+            return ("LOGIN", Theme.warning)
+        case .unknown, .unavailable:
+            return ("NO_DATA", Theme.textSecondary)
+        }
+    }
+
+    // La cabecera resume lo peor de los tres.
     private var overallStatus: StatusBadge {
-        let candidates = [claudeStatus, geminiStatus]
-        for label in ["RATE_LIMITED", "HIGH_USAGE"] {
+        let candidates = [claudeStatus, geminiStatus, openAIStatus]
+        for label in ["RATE_LIMITED", "NO_CREDIT", "HIGH_USAGE"] {
             if let match = candidates.first(where: { $0.label == label }) {
                 return match
             }
@@ -727,6 +777,21 @@ struct DashboardView: View {
             return reason
         case .unknown:
             return "consultando gemini.google.com/usage…"
+        }
+    }
+
+    // MARK: - Helpers OpenAI
+
+    private var openAIScopeComment: String {
+        switch manager.openAIBalance {
+        case .loaded:
+            return "saldo de créditos de la API · platform.openai.com"
+        case .needsLogin:
+            return "conecta tu cuenta de OpenAI una vez para ver el saldo de la API"
+        case .unavailable(let reason):
+            return reason
+        case .unknown:
+            return "consultando platform.openai.com…"
         }
     }
 

@@ -49,6 +49,7 @@ swiftc -o "$MACOS_DIR/$APP_NAME" \
     src/GeminiUsageService.swift \
     src/GeminiLogScanner.swift \
     src/GeminiWebUsageService.swift \
+    src/OpenAIBillingService.swift \
     src/LaunchAtLoginService.swift \
     src/Theme.swift \
     -framework Cocoa \
