@@ -5,14 +5,18 @@ struct Theme {
     // VisualEffectBackground), así que paneles, bordes y texto se definen como
     // blanco con distinta opacidad para que se integren con lo que hay detrás.
     static let background = Color.black.opacity(0.25)    // Botones sobre el cristal
+    // Velo oscuro sobre el desenfoque: sin él, con una ventana blanca detrás el
+    // cristal se aclara tanto que el texto blanco apenas se lee. Deja ver el
+    // fondo difuminado pero garantiza contraste sobre cualquier color.
+    static let glassTint = Color.black.opacity(0.62)
     static let cardBackground = Color.white.opacity(0.05) // Paneles
     static let border = Color.white.opacity(0.10)         // Bordes y separadores
     static let meterTrack = Color.white.opacity(0.08)     // Segmentos apagados
 
     // Text colors
     static let textPrimary = Color.white.opacity(0.92)   // High contrast text
-    static let textSecondary = Color.white.opacity(0.58) // Muted labels and secondary text
-    static let textMuted = Color.white.opacity(0.38)     // Subtitle/disabled text
+    static let textSecondary = Color.white.opacity(0.70) // Muted labels and secondary text
+    static let textMuted = Color.white.opacity(0.50)     // Subtitle/disabled text
 
     // Accents & status colors
     static let accent = Color(hex: "#3574F0")            // JetBrains Blue

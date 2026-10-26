@@ -63,7 +63,13 @@ struct DashboardView: View {
         .frame(width: 380)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(VisualEffectBackground(material: .hudWindow).ignoresSafeArea())
+        .background(
+            ZStack {
+                VisualEffectBackground(material: .hudWindow)
+                Theme.glassTint
+            }
+            .ignoresSafeArea()
+        )
         .foregroundColor(Theme.textPrimary)
         .onReceive(timer) { _ in
             tick.toggle() // Forces redraw of countdown strings
